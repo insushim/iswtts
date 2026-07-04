@@ -2,11 +2,15 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+export type EngineId = 'system' | 'edge';
+
 export type SettingsState = {
+  engineId: EngineId;   // 'system'=온디바이스 시스템 TTS(기본·오프라인), 'edge'=Edge 온라인 신경망
   rate: number;         // 재생 속도 (0.5 .. 5.0). Android setSpeechRate는 피치 보존.
   pitch: number;        // 음높이 (0.5 .. 2.0). 1.0 유지가 배속 시 가장 또렷.
   language: string;     // BCP-47
-  voiceId?: string;     // 선택 음성(엔진 식별자)
+  voiceId?: string;     // 시스템 엔진 선택 음성(엔진 식별자)
+  edgeVoiceId?: string; // Edge 엔진 선택 음성(예: ko-KR-SunHiNeural). 엔진마다 식별자 체계가 달라 분리.
   fontScale: number;    // 자막 글자 배율 (0.8 .. 1.8)
   set: (patch: Partial<SettingsState>) => void;
 };
@@ -16,10 +20,12 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 export const useSettings = create<SettingsState>()(
   persist(
     (set) => ({
+      engineId: 'system',
       rate: 1.0,
       pitch: 1.0,
       language: 'ko-KR',
       voiceId: undefined,
+      edgeVoiceId: undefined,
       fontScale: 1.0,
       // 스토어 레벨 방어 클램프 — 어떤 호출부에서도 범위를 벗어난 값이 엔진까지 흐르지 않게.
       set: (patch) => {
@@ -34,10 +40,12 @@ export const useSettings = create<SettingsState>()(
       name: 'iwtts-settings',
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (s) => ({
+        engineId: s.engineId,
         rate: s.rate,
         pitch: s.pitch,
         language: s.language,
         voiceId: s.voiceId,
+        edgeVoiceId: s.edgeVoiceId,
         fontScale: s.fontScale,
       }),
     },

@@ -2,7 +2,7 @@
   "expo": {
     "name": "소리책",
     "slug": "iwtts",
-    "version": "1.0.3",
+    "version": "1.1.0",
     "owner": "insushim",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -12,7 +12,7 @@
     "updates": {
       "enabled": false
     },
-    "runtimeVersion": "1.0.3",
+    "runtimeVersion": "1.1.0",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -24,7 +24,7 @@
     },
     "android": {
       "package": "com.iwtts.app",
-      "versionCode": 4,
+      "versionCode": 5,
       "edgeToEdgeEnabled": false,
       "adaptiveIcon": {
         "backgroundColor": "#6366f1",
@@ -40,6 +40,15 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false
+        }
+      ],
+      "./plugins/withRemoveRecordAudio"
+    ]
   }
 }

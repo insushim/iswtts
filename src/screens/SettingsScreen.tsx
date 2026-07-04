@@ -12,7 +12,9 @@ import * as Speech from 'expo-speech';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { usePalette } from '../lib/theme';
 import { useSettings } from '../store/settings';
-import { systemEngine } from '../tts/ExpoSpeechEngine';
+import { usePlayer } from '../store/player';
+import { getEngine, systemEngine, edgeEngine } from '../tts';
+import { EDGE_VOICES } from '../tts/edge/voices';
 import { APP_VERSION } from '../lib/config';
 import type { RootStackParamList } from '../../App';
 import type { EngineVoice } from '../tts/TtsEngine';
@@ -39,8 +41,10 @@ export default function SettingsScreen() {
   // expo-speech의 Voice.quality는 현재 'Enhanced' | 'Default'만 반환한다.
   const isHiQuality = (q?: string) => !!q && /enhanced/i.test(q);
 
+  const isEdge = s.engineId === 'edge';
+
   // 언어 일치 + 고품질(Enhanced/Network) 우선 정렬 → 배속에서 더 또렷한 음성이 위로.
-  const langVoices = voices
+  const systemLangVoices = voices
     .filter((v) => v.language?.toLowerCase().startsWith(s.language.slice(0, 2).toLowerCase()))
     .sort((a, b) => {
       const qa = isHiQuality(a.quality) ? 0 : 1;
@@ -48,6 +52,15 @@ export default function SettingsScreen() {
       if (qa !== qb) return qa - qb;
       return a.name.localeCompare(b.name);
     });
+
+  const edgeLangVoices = EDGE_VOICES.filter((v) =>
+    v.language.toLowerCase().startsWith(s.language.slice(0, 2).toLowerCase()),
+  );
+
+  const langVoices = isEdge ? edgeLangVoices : systemLangVoices;
+  const selectedVoiceId = isEdge ? s.edgeVoiceId : s.voiceId;
+  const selectVoice = (id?: string) =>
+    s.set(isEdge ? { edgeVoiceId: id } : { voiceId: id });
 
   const sampleText = () =>
     s.language.startsWith('ko')
@@ -59,10 +72,16 @@ export default function SettingsScreen() {
           : 'Hello. This is how SoriBook reads to you.';
 
   const preview = (voiceId?: string) => {
+    // 책 재생 중이면 먼저 정지(엔진 싱글턴 공유 → 미리듣기가 재생을 가로채 좀비 상태 방지).
+    if (usePlayer.getState().playing) usePlayer.getState().pause();
+    // 두 엔진 모두 정지 후, 선택 엔진으로 샘플 발화.
     Speech.stop();
-    systemEngine.speak(
+    edgeEngine.stop();
+    const engine = getEngine(s.engineId);
+    const vId = voiceId ?? (isEdge ? s.edgeVoiceId : s.voiceId);
+    engine.speak(
       sampleText(),
-      { rate: s.rate, pitch: s.pitch, language: s.language, voiceId: voiceId ?? s.voiceId },
+      { rate: s.rate, pitch: s.pitch, language: s.language, voiceId: vId },
       {},
     );
   };
@@ -112,7 +131,7 @@ export default function SettingsScreen() {
           return (
             <TouchableOpacity
               key={l.code}
-              onPress={() => s.set({ language: l.code, voiceId: undefined })}
+              onPress={() => s.set({ language: l.code, voiceId: undefined, edgeVoiceId: undefined })}
               style={[
                 styles.chip,
                 { borderColor: active ? p.primary : p.border, backgroundColor: active ? p.primary : 'transparent' },
@@ -124,6 +143,38 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           );
         })}
+      </View>
+
+      <Text style={[styles.section, { color: p.subtext }]}>음성 엔진</Text>
+      <View style={{ gap: 8 }}>
+        <TouchableOpacity
+          onPress={() => s.set({ engineId: 'system' })}
+          style={[styles.engine, { borderColor: !isEdge ? p.primary : p.border }]}
+        >
+          <Text style={{ color: p.text, fontWeight: !isEdge ? '800' : '600' }}>
+            기본 (기기 내장) · 오프라인
+          </Text>
+          <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 3 }}>
+            인터넷 없이 동작. 기기에 설치된 시스템 음성을 사용합니다.
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => s.set({ engineId: 'edge' })}
+          style={[styles.engine, { borderColor: isEdge ? p.primary : p.border }]}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={{ color: p.text, fontWeight: isEdge ? '800' : '600' }}>
+              고품질 온라인 (Edge 신경망)
+            </Text>
+            <View style={[styles.hqBadge, { backgroundColor: p.primary }]}>
+              <Text style={{ color: p.onPrimary, fontSize: 9, fontWeight: '800' }}>추천</Text>
+            </View>
+          </View>
+          <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 3 }}>
+            훨씬 자연스러운 사람 같은 목소리. 무료지만 인터넷이 필요하고, 연결이 안 되면
+            자동으로 기본 음성으로 읽어줍니다. (데이터 사용)
+          </Text>
+        </TouchableOpacity>
       </View>
 
       <Text style={[styles.section, { color: p.subtext }]}>재생</Text>
@@ -165,14 +216,14 @@ export default function SettingsScreen() {
       ) : (
         <View style={{ gap: 8 }}>
           <TouchableOpacity
-            onPress={() => s.set({ voiceId: undefined })}
-            style={[styles.voice, { borderColor: !s.voiceId ? p.primary : p.border }]}
+            onPress={() => selectVoice(undefined)}
+            style={[styles.voice, { borderColor: !selectedVoiceId ? p.primary : p.border }]}
           >
             <Text style={{ color: p.text, fontWeight: '600' }}>기본 음성</Text>
           </TouchableOpacity>
           {langVoices.map((v) => {
-            const active = s.voiceId === v.id;
-            const hq = isHiQuality(v.quality);
+            const active = selectedVoiceId === v.id;
+            const hq = isEdge || isHiQuality(v.quality);
             // 중첩 Touchable 회피: 바깥은 View, 선택/미리듣기를 별도 Touchable로 분리.
             return (
               <View
@@ -181,7 +232,7 @@ export default function SettingsScreen() {
               >
                 <TouchableOpacity
                   style={{ flex: 1 }}
-                  onPress={() => s.set({ voiceId: v.id })}
+                  onPress={() => selectVoice(v.id)}
                   activeOpacity={0.7}
                 >
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -235,6 +286,7 @@ const styles = StyleSheet.create({
   stepVal: { fontSize: 16, fontWeight: '700', minWidth: 56, textAlign: 'center' },
   previewBtn: { marginTop: 16, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
   voice: { borderWidth: 1.5, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12 },
+  engine: { borderWidth: 1.5, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12 },
   voiceRow: {
     borderWidth: 1.5,
     borderRadius: 12,

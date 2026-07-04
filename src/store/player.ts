@@ -1,11 +1,15 @@
 import { create } from 'zustand';
-import { systemEngine } from '../tts/ExpoSpeechEngine';
+import type { TtsEngine } from '../tts/TtsEngine';
+import { getEngine, systemEngine } from '../tts';
 import { useSettings } from './settings';
 import { useLibrary } from './library';
 
 // 재생 컨트롤러. 문장 큐를 순회하며 엔진에 발화시키고, onBoundary로 단어 하이라이트를 갱신한다.
 // epoch로 stale 콜백(정지/문장전환 후 뒤늦게 온 콜백)을 무효화한다.
 let epoch = 0;
+
+// 현재 발화 중인 엔진(정지/문장전환 시 이 엔진을 멈춘다). 엔진 전환 시에도 올바른 엔진을 stop.
+let activeEngine: TtsEngine = systemEngine;
 
 export type PlayerState = {
   docId: string | null;
@@ -37,7 +41,8 @@ function speakParams() {
     rate: s.rate,
     pitch: s.pitch,
     language: s.language,
-    voiceId: s.voiceId,
+    // 엔진마다 음성 식별자 체계가 다르다 → 선택 엔진에 맞는 voiceId 전달.
+    voiceId: s.engineId === 'edge' ? s.edgeVoiceId : s.voiceId,
   };
 }
 
@@ -45,15 +50,19 @@ export const usePlayer = create<PlayerState>((set, get) => {
   const speakCurrent = () => {
     const { sentences, index, docId } = get();
     if (!sentences.length || index < 0 || index >= sentences.length) return;
-    systemEngine.stop();
+    activeEngine.stop();
+
+    const engineId = useSettings.getState().engineId;
+    const engine = getEngine(engineId);
+    activeEngine = engine;
     const myEpoch = ++epoch;
     set({ wordStart: 0, wordLen: 0, playing: true });
 
     // 진행률 저장
     if (docId) useLibrary.getState().setProgress(docId, index, sentences.length);
 
-    systemEngine.speak(sentences[index], speakParams(), {
-      onBoundary: (charIndex, charLength) => {
+    const handlers = {
+      onBoundary: (charIndex: number, charLength: number) => {
         if (myEpoch !== epoch) return;
         set({ wordStart: charIndex, wordLen: charLength });
       },
@@ -67,8 +76,25 @@ export const usePlayer = create<PlayerState>((set, get) => {
           set({ playing: false, wordStart: 0, wordLen: 0 });
         }
       },
+    };
+
+    const sentence = sentences[index];
+    engine.speak(sentence, speakParams(), {
+      ...handlers,
       onError: () => {
         if (myEpoch !== epoch) return;
+        // Edge(온라인) 실패 시 → 같은 문장을 시스템 TTS로 폴백해 낭독이 끊기지 않게.
+        if (engineId === 'edge') {
+          activeEngine = systemEngine;
+          systemEngine.speak(sentence, { ...speakParams(), voiceId: useSettings.getState().voiceId }, {
+            ...handlers,
+            onError: () => {
+              if (myEpoch !== epoch) return;
+              set({ playing: false });
+            },
+          });
+          return;
+        }
         set({ playing: false });
       },
     });
@@ -84,7 +110,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     playing: false,
 
     load: ({ docId, title, sentences, startIndex = 0 }) => {
-      systemEngine.stop();
+      activeEngine.stop();
       epoch++;
       set({
         docId,
@@ -104,7 +130,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     pause: () => {
       epoch++; // 진행 중 콜백 무효화
-      systemEngine.stop();
+      activeEngine.stop();
       set({ playing: false });
     },
 
@@ -144,7 +170,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     unload: () => {
       epoch++;
-      systemEngine.stop();
+      activeEngine.stop();
       set({
         docId: null,
         title: '',
