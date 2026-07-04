@@ -13,6 +13,9 @@ export class ExpoSpeechEngine implements TtsEngine {
   readonly offline = true;
 
   speak(text: string, params: SpeakParams, handlers: SpeakHandlers): void {
+    // 이전 발화를 즉시 끊고 새 문장 발화(문장 전환/수동 이동 시 중첩·큐잉 방지).
+    // 이로써 상위 플레이어는 발화 전 별도 stop 호출이 필요 없다(엔진이 자기 interrupt를 책임).
+    Speech.stop();
     Speech.speak(text, {
       language: params.language,
       voice: params.voiceId,

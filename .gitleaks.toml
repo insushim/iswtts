@@ -1,0 +1,13 @@
+# gitleaks 설정 — 기본 룰(useDefault) 유지 + 알려진 공개 상수 오탐만 예외.
+[extend]
+useDefault = true
+
+# Edge(Read Aloud) TRUSTED_CLIENT_TOKEN 은 비밀이 아니라 공개 고정 상수다.
+# 모든 edge-tts 구현이 동일값을 하드코딩하며(공개 문서), 계정 접근 권한이 없고 로테이션도 불가.
+# generic-api-key 룰이 32자 hex 를 오탐하므로 이 특정 값만 allowlist.
+[[allowlists]]
+description = "Edge Read Aloud public trusted client token (public constant, not a secret)"
+regexTarget = "match"
+regexes = [
+  '''6A5AA1D4EAFF4E9FB37E23D68491D6F4''',
+]

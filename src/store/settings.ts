@@ -6,7 +6,7 @@ export type EngineId = 'system' | 'edge';
 
 export type SettingsState = {
   engineId: EngineId;   // 'system'=온디바이스 시스템 TTS(기본·오프라인), 'edge'=Edge 온라인 신경망
-  rate: number;         // 재생 속도 (0.5 .. 5.0). Android setSpeechRate는 피치 보존.
+  rate: number;         // 재생 속도 (0.5 .. 10.0). Android setSpeechRate는 피치 보존.
   pitch: number;        // 음높이 (0.5 .. 2.0). 1.0 유지가 배속 시 가장 또렷.
   language: string;     // BCP-47
   voiceId?: string;     // 시스템 엔진 선택 음성(엔진 식별자)
@@ -30,7 +30,7 @@ export const useSettings = create<SettingsState>()(
       // 스토어 레벨 방어 클램프 — 어떤 호출부에서도 범위를 벗어난 값이 엔진까지 흐르지 않게.
       set: (patch) => {
         const next: Partial<SettingsState> = { ...patch };
-        if (next.rate != null) next.rate = clamp(next.rate, 0.5, 5);
+        if (next.rate != null) next.rate = clamp(next.rate, 0.5, 10);
         if (next.pitch != null) next.pitch = clamp(next.pitch, 0.5, 2);
         if (next.fontScale != null) next.fontScale = clamp(next.fontScale, 0.8, 1.8);
         set(next);

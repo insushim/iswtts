@@ -115,7 +115,7 @@ export default function SettingsScreen() {
     Math.round(Math.max(lo, Math.min(hi, v)) * 100) / 100;
 
   // iOS AVSpeech는 배속 상한이 ~2× → 플랫폼별 최대 속도.
-  const rateMax = Platform.OS === 'ios' ? 2 : 5;
+  const rateMax = Platform.OS === 'ios' ? 2 : 10;
 
   return (
     <ScrollView
@@ -185,8 +185,10 @@ export default function SettingsScreen() {
         onInc={() => s.set({ rate: clamp(s.rate + 0.5, 0.5, rateMax) })}
       />
       <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 2 }}>
-        최대 {rateMax}×까지 지원. 배속해도 음높이는 그대로 유지돼 또렷합니다. 아주 빠른 속도의 또렷함은
-        기기 음성 품질을 따르니, 아래에서 <Text style={{ fontWeight: '700' }}>고품질(Enhanced)</Text> 음성을 고르면 더 선명합니다.
+        최대 {rateMax}×까지 지원. 배속해도 음높이는 그대로 유지돼 또렷합니다.
+        {isEdge
+          ? ' 고품질 온라인(Edge)은 약 6×까지 반영되고, 그 이상은 기본 음성에서 더 빨라집니다.'
+          : ' 아주 빠른 속도의 또렷함은 기기 음성 품질을 따릅니다(기기 엔진에 따라 4~5× 부근에서 상한일 수 있음).'}
       </Text>
       <Row
         label="음높이"

@@ -50,10 +50,13 @@ export const usePlayer = create<PlayerState>((set, get) => {
   const speakCurrent = () => {
     const { sentences, index, docId } = get();
     if (!sentences.length || index < 0 || index >= sentences.length) return;
-    activeEngine.stop();
 
     const engineId = useSettings.getState().engineId;
     const engine = getEngine(engineId);
+    // 엔진 전환 시에만 이전 엔진을 완전 정지(그 엔진의 prefetch 캐시까지 비움).
+    // 같은 엔진이면 stop()을 부르지 않는다 — engine.speak()가 현재 재생만 끊고 prefetch 캐시는 보존해,
+    // 자동진행 시 미리 합성해 둔 다음 문장이 즉시 재생된다(문장 간 딜레이 제거의 핵심).
+    if (activeEngine !== engine) activeEngine.stop();
     activeEngine = engine;
     const myEpoch = ++epoch;
     set({ wordStart: 0, wordLen: 0, playing: true });
@@ -85,6 +88,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
         if (myEpoch !== epoch) return;
         // Edge(온라인) 실패 시 → 같은 문장을 시스템 TTS로 폴백해 낭독이 끊기지 않게.
         if (engineId === 'edge') {
+          engine.stop(); // Edge 잔여 재생·prefetch 캐시(mp3) 정리(폴백 후 누수 방지)
           activeEngine = systemEngine;
           systemEngine.speak(sentence, { ...speakParams(), voiceId: useSettings.getState().voiceId }, {
             ...handlers,
@@ -98,6 +102,12 @@ export const usePlayer = create<PlayerState>((set, get) => {
         set({ playing: false });
       },
     });
+
+    // 다음 문장을 미리 합성(온라인 엔진의 문장 간 딜레이 제거). 시스템 엔진은 prefetch 미구현 → no-op.
+    const nextIdx = index + 1;
+    if (nextIdx < sentences.length) {
+      engine.prefetch?.(sentences[nextIdx], speakParams());
+    }
   };
 
   return {

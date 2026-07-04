@@ -28,4 +28,7 @@ export interface TtsEngine {
   speak(text: string, params: SpeakParams, handlers: SpeakHandlers): void;
   stop(): void;
   getVoices(): Promise<EngineVoice[]>;
+  // 선택: 다음에 읽을 문장을 미리 합성해 둔다(온라인 엔진의 문장 간 딜레이 제거용).
+  // 지원 엔진(Edge)만 구현. 시스템 엔진은 즉시 발화라 불필요.
+  prefetch?(text: string, params: SpeakParams): void;
 }

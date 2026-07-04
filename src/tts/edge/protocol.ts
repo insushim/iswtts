@@ -3,7 +3,9 @@
 // 비공식 엔드포인트라 MS가 토큰/버전을 바꾸면 여기 상수만 갱신하면 된다.
 import * as Crypto from 'expo-crypto';
 
-export const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
+// 비밀 아님: Edge Read Aloud 의 공개 고정 상수(모든 edge-tts 구현이 동일값 사용, 문서 공개).
+// 계정 접근 권한 없음·로테이션 불가. 시크릿 스캐너 오탐 방지 표기.
+export const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4'; // gitleaks:allow
 export const CHROMIUM_FULL_VERSION = '143.0.3650.75';
 export const CHROMIUM_MAJOR_VERSION = '143';
 export const SEC_MS_GEC_VERSION = `1-${CHROMIUM_FULL_VERSION}`;
