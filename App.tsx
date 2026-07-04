@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { useColorScheme } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -9,6 +9,7 @@ import LibraryScreen from './src/screens/LibraryScreen';
 import PlayerScreen from './src/screens/PlayerScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import PdfExtractor from './src/components/PdfExtractor';
+import { checkForUpdate } from './src/lib/appUpdate';
 
 export type RootStackParamList = {
   Library: undefined;
@@ -20,6 +21,15 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export default function App() {
   const scheme = useColorScheme();
+
+  // 앱 실행 시 최신 릴리스 확인(새 버전이면 안내 → 다운로드 → 설치창)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      checkForUpdate();
+    }, 1500);
+    return () => clearTimeout(t);
+  }, []);
+
   return (
     <SafeAreaProvider>
       <NavigationContainer theme={scheme === 'dark' ? DarkTheme : DefaultTheme}>
