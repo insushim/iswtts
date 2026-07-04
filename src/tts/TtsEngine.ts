@@ -9,7 +9,7 @@ export type SpeakHandlers = {
 };
 
 export type SpeakParams = {
-  rate?: number;     // 0.1 .. ~2 (엔진 정규화)
+  rate?: number;     // 0.5 .. 5.0 (Android 시스템 TTS는 피치 보존 배속). iOS는 ~2.0에서 상한.
   pitch?: number;
   voiceId?: string;  // 엔진별 음성 식별자
   language?: string; // BCP-47 (예: ko-KR)

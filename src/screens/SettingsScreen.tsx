@@ -5,6 +5,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Speech from 'expo-speech';
@@ -35,19 +36,33 @@ export default function SettingsScreen() {
     systemEngine.getVoices().then(setVoices);
   }, []);
 
-  const langVoices = voices.filter((v) =>
-    v.language?.toLowerCase().startsWith(s.language.slice(0, 2).toLowerCase()),
-  );
+  // expo-speech의 Voice.quality는 현재 'Enhanced' | 'Default'만 반환한다.
+  const isHiQuality = (q?: string) => !!q && /enhanced/i.test(q);
 
-  const preview = () => {
+  // 언어 일치 + 고품질(Enhanced/Network) 우선 정렬 → 배속에서 더 또렷한 음성이 위로.
+  const langVoices = voices
+    .filter((v) => v.language?.toLowerCase().startsWith(s.language.slice(0, 2).toLowerCase()))
+    .sort((a, b) => {
+      const qa = isHiQuality(a.quality) ? 0 : 1;
+      const qb = isHiQuality(b.quality) ? 0 : 1;
+      if (qa !== qb) return qa - qb;
+      return a.name.localeCompare(b.name);
+    });
+
+  const sampleText = () =>
+    s.language.startsWith('ko')
+      ? '안녕하세요. 소리책이 이렇게 읽어드립니다.'
+      : s.language.startsWith('ja')
+        ? 'こんにちは。ソリブックが読み上げます。'
+        : s.language.startsWith('zh')
+          ? '你好，这是朗读示例。'
+          : 'Hello. This is how SoriBook reads to you.';
+
+  const preview = (voiceId?: string) => {
     Speech.stop();
-    const sample =
-      s.language.startsWith('ko')
-        ? '안녕하세요. 소리책이 이렇게 읽어드립니다.'
-        : 'Hello. This is how SoriBook reads to you.';
     systemEngine.speak(
-      sample,
-      { rate: s.rate, pitch: s.pitch, language: s.language, voiceId: s.voiceId },
+      sampleText(),
+      { rate: s.rate, pitch: s.pitch, language: s.language, voiceId: voiceId ?? s.voiceId },
       {},
     );
   };
@@ -80,6 +95,9 @@ export default function SettingsScreen() {
   const clamp = (v: number, lo: number, hi: number) =>
     Math.round(Math.max(lo, Math.min(hi, v)) * 100) / 100;
 
+  // iOS AVSpeech는 배속 상한이 ~2× → 플랫폼별 최대 속도.
+  const rateMax = Platform.OS === 'ios' ? 2 : 5;
+
   return (
     <ScrollView
       style={{ backgroundColor: p.bg }}
@@ -111,10 +129,14 @@ export default function SettingsScreen() {
       <Text style={[styles.section, { color: p.subtext }]}>재생</Text>
       <Row
         label="속도"
-        value={`${s.rate.toFixed(2)}×`}
-        onDec={() => s.set({ rate: clamp(s.rate - 0.25, 0.5, 3) })}
-        onInc={() => s.set({ rate: clamp(s.rate + 0.25, 0.5, 3) })}
+        value={`${s.rate}×`}
+        onDec={() => s.set({ rate: clamp(s.rate - 0.25, 0.5, rateMax) })}
+        onInc={() => s.set({ rate: clamp(s.rate + 0.25, 0.5, rateMax) })}
       />
+      <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 2 }}>
+        최대 {rateMax}×까지 지원. 배속해도 음높이는 그대로 유지돼 또렷합니다. 아주 빠른 속도의 또렷함은
+        기기 음성 품질을 따르니, 아래에서 <Text style={{ fontWeight: '700' }}>고품질(Enhanced)</Text> 음성을 고르면 더 선명합니다.
+      </Text>
       <Row
         label="음높이"
         value={s.pitch.toFixed(2)}
@@ -128,8 +150,8 @@ export default function SettingsScreen() {
         onInc={() => s.set({ fontScale: clamp(s.fontScale + 0.1, 0.8, 1.8) })}
       />
 
-      <TouchableOpacity onPress={preview} style={[styles.previewBtn, { backgroundColor: p.primary }]}>
-        <Text style={{ color: p.onPrimary, fontWeight: '800', fontSize: 15 }}>🔊 미리듣기</Text>
+      <TouchableOpacity onPress={() => preview()} style={[styles.previewBtn, { backgroundColor: p.primary }]}>
+        <Text style={{ color: p.onPrimary, fontWeight: '800', fontSize: 15 }}>🔊 현재 설정으로 미리듣기</Text>
       </TouchableOpacity>
 
       <Text style={[styles.section, { color: p.subtext }]}>
@@ -150,17 +172,41 @@ export default function SettingsScreen() {
           </TouchableOpacity>
           {langVoices.map((v) => {
             const active = s.voiceId === v.id;
+            const hq = isHiQuality(v.quality);
+            // 중첩 Touchable 회피: 바깥은 View, 선택/미리듣기를 별도 Touchable로 분리.
             return (
-              <TouchableOpacity
+              <View
                 key={v.id}
-                onPress={() => s.set({ voiceId: v.id })}
-                style={[styles.voice, { borderColor: active ? p.primary : p.border }]}
+                style={[styles.voiceRow, { borderColor: active ? p.primary : p.border }]}
               >
-                <Text style={{ color: p.text, fontWeight: active ? '800' : '500' }} numberOfLines={1}>
-                  {v.name}
-                </Text>
-                <Text style={{ color: p.subtext, fontSize: 11 }}>{v.language}</Text>
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={{ flex: 1 }}
+                  onPress={() => s.set({ voiceId: v.id })}
+                  activeOpacity={0.7}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text
+                      style={{ color: p.text, fontWeight: active ? '800' : '500' }}
+                      numberOfLines={1}
+                    >
+                      {v.name}
+                    </Text>
+                    {hq && (
+                      <View style={[styles.hqBadge, { backgroundColor: p.primary }]}>
+                        <Text style={{ color: p.onPrimary, fontSize: 9, fontWeight: '800' }}>고품질</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={{ color: p.subtext, fontSize: 11 }}>{v.language}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => preview(v.id)}
+                  hitSlop={10}
+                  style={[styles.voicePlay, { borderColor: p.border }]}
+                >
+                  <Text style={{ color: p.primary, fontSize: 15 }}>▶</Text>
+                </TouchableOpacity>
+              </View>
             );
           })}
         </View>
@@ -189,5 +235,23 @@ const styles = StyleSheet.create({
   stepVal: { fontSize: 16, fontWeight: '700', minWidth: 56, textAlign: 'center' },
   previewBtn: { marginTop: 16, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
   voice: { borderWidth: 1.5, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12 },
+  voiceRow: {
+    borderWidth: 1.5,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  voicePlay: {
+    borderWidth: 1,
+    borderRadius: 18,
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hqBadge: { borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   version: { textAlign: 'center', marginTop: 32, fontSize: 12 },
 });
