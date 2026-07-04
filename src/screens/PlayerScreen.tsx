@@ -86,12 +86,12 @@ export default function PlayerScreen({ route, navigation }: Props) {
   const word = wordLen > 0 ? cur.slice(wordStart, hlEnd) : '';
   const after = wordLen > 0 ? cur.slice(hlEnd) : '';
 
-  // 배속 프리셋. Android setSpeechRate는 피치 보존 배속(최대 5×).
+  // 배속 프리셋(0.5 단위). Android setSpeechRate는 피치 보존 배속(최대 5×).
   // iOS AVSpeech는 상한이 ~2×라 2× 초과는 무효 → iOS에선 2×까지만 노출.
   const RATE_STEPS =
     Platform.OS === 'ios'
-      ? [0.75, 1.0, 1.25, 1.5, 2.0]
-      : [0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0];
+      ? [0.5, 1.0, 1.5, 2.0]
+      : [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0];
   const cycleRate = () => {
     // 현재 속도보다 큰 첫 프리셋으로 이동, 없으면 처음으로 순환.
     // (설정 스테퍼로 만든 프리셋 밖 값 0.5·1.75·4.75 등에서도 0.75로 급락하지 않음)

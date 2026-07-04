@@ -130,8 +130,8 @@ export default function SettingsScreen() {
       <Row
         label="속도"
         value={`${s.rate}×`}
-        onDec={() => s.set({ rate: clamp(s.rate - 0.25, 0.5, rateMax) })}
-        onInc={() => s.set({ rate: clamp(s.rate + 0.25, 0.5, rateMax) })}
+        onDec={() => s.set({ rate: clamp(s.rate - 0.5, 0.5, rateMax) })}
+        onInc={() => s.set({ rate: clamp(s.rate + 0.5, 0.5, rateMax) })}
       />
       <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 2 }}>
         최대 {rateMax}×까지 지원. 배속해도 음높이는 그대로 유지돼 또렷합니다. 아주 빠른 속도의 또렷함은
