@@ -3,6 +3,12 @@ import type { TtsEngine } from '../tts/TtsEngine';
 import { getEngine, systemEngine } from '../tts';
 import { useSettings } from './settings';
 import { useLibrary } from './library';
+import {
+  startMediaSession,
+  pauseMediaSession,
+  stopMediaSession,
+  setRemoteHandlers,
+} from '../lib/mediaSession';
 
 // 재생 컨트롤러. 문장 큐를 순회하며 엔진에 발화시키고, onBoundary로 단어 하이라이트를 갱신한다.
 // epoch로 stale 콜백(정지/문장전환 후 뒤늦게 온 콜백)을 무효화한다.
@@ -88,6 +94,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
     activeEngine = engine;
     const myEpoch = ++epoch;
     set({ wordStart: 0, wordLen: 0, playing: true });
+    // 백그라운드 유지 + 잠금화면 컨트롤(무음 앵커). 문장마다 불려도 무해(멱등).
+    startMediaSession(get().title);
 
     // 진행률 저장
     if (docId) useLibrary.getState().setProgress(docId, index, sentences.length);
@@ -107,6 +115,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
           speakCurrent();
         } else {
           set({ playing: false, wordStart: 0, wordLen: 0 });
+          pauseMediaSession(); // 책 끝 — 알림은 남겨 ▶ 로 재청취 가능
         }
       },
     };
@@ -129,11 +138,13 @@ export const usePlayer = create<PlayerState>((set, get) => {
             onError: () => {
               if (myEpoch !== epoch) return;
               set({ playing: false, notice: '재생에 실패했습니다 — 기기 TTS 설정을 확인해주세요.' });
+              pauseMediaSession();
             },
           });
           return;
         }
         set({ playing: false, notice: '재생에 실패했습니다 — 기기 TTS 설정을 확인해주세요.' });
+        pauseMediaSession();
       },
     });
 
@@ -158,6 +169,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     load: ({ docId, title, sentences, startIndex = 0 }) => {
       activeEngine.stop();
       epoch++;
+      pauseMediaSession(); // 새 문서 준비 — 앵커도 정지 상태로 정렬(재생 시 새 제목으로 재개)
       set({
         docId,
         title,
@@ -179,6 +191,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       epoch++; // 진행 중 콜백 무효화
       activeEngine.stop();
       set({ playing: false });
+      pauseMediaSession();
     },
 
     toggle: () => {
@@ -223,6 +236,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     unload: () => {
       epoch++;
       activeEngine.stop();
+      stopMediaSession(); // 잠금화면 알림까지 제거
       set({
         docId: null,
         title: '',
@@ -234,4 +248,19 @@ export const usePlayer = create<PlayerState>((set, get) => {
       });
     },
   };
+});
+
+// 잠금화면/알림의 ▶·⏸ 는 네이티브가 앵커 플레이어를 직접 제어한다 — 그 상태 변화를
+// 스토어의 play/pause 로 되비쳐 낭독(엔진)과 UI 를 함께 동기화한다.
+setRemoteHandlers({
+  onRemotePlay: () => {
+    const st = usePlayer.getState();
+    if (st.playing) return;
+    if (st.sentences.length) st.play();
+    else pauseMediaSession(); // 읽을 문서가 없으면 앵커만 되돌림
+  },
+  onRemotePause: () => {
+    const st = usePlayer.getState();
+    if (st.playing) st.pause();
+  },
 });
