@@ -9,10 +9,28 @@ import { stripTagBlocks } from '../lib/html';
 export async function extractTxt(uri: string): Promise<string> {
   const b64 = await readAsStringAsync(uri, { encoding: EncodingType.Base64 });
   const buf = Buffer.from(b64, 'base64');
-  return stripIfHtml(decodeSmart(buf));
+  const text = decodeSmart(buf);
+  // 임의 바이너리(이미지·압축 등)를 텍스트로 억지 해석한 경우 차단 —
+  // 앞부분 표본에서 대체문자/제어문자 비율이 높으면 텍스트 파일이 아니다.
+  if (looksBinary(text)) {
+    throw new Error('텍스트 파일이 아니거나 지원하지 않는 인코딩입니다.');
+  }
+  return stripIfHtml(text);
 }
 
-function decodeSmart(buf: Buffer): string {
+function looksBinary(s: string): boolean {
+  const sample = s.slice(0, 4000);
+  if (!sample) return false;
+  let bad = 0;
+  for (let i = 0; i < sample.length; i++) {
+    const c = sample.charCodeAt(i);
+    if (c === 0xfffd || c === 0 || (c < 32 && c !== 9 && c !== 10 && c !== 13)) bad++;
+  }
+  return bad / sample.length > 0.05;
+}
+
+// (테스트에서 직접 검증할 수 있게 export)
+export function decodeSmart(buf: Buffer): string {
   if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
     return buf.slice(3).toString('utf8');
   }

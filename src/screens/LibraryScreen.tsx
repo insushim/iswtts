@@ -70,6 +70,9 @@ export default function LibraryScreen({ navigation }: Props) {
       onPress={() => navigation.navigate('Player', { docId: item.id })}
       onLongPress={() => confirmRemove(item)}
       activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel={`${item.title}, ${item.sentenceCount}문장, ${Math.round(item.progress * 100)}퍼센트 읽음`}
+      accessibilityHint="누르면 읽기 화면을 엽니다. 길게 누르면 삭제합니다."
     >
       <View style={[styles.badge, { backgroundColor: p.primary }]}>
         <Text style={[styles.badgeText, { color: p.onPrimary }]}>
@@ -99,7 +102,12 @@ export default function LibraryScreen({ navigation }: Props) {
     <View style={[styles.root, { backgroundColor: p.bg, paddingTop: insets.top + 8 }]}>
       <View style={styles.header}>
         <Text style={[styles.h1, { color: p.text }]}>소리책</Text>
-        <TouchableOpacity onPress={() => navigation.navigate('Settings')} hitSlop={12}>
+        <TouchableOpacity
+          onPress={() => navigation.navigate('Settings')}
+          hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel="설정 열기"
+        >
           <Text style={[styles.gear, { color: p.subtext }]}>⚙︎</Text>
         </TouchableOpacity>
       </View>
@@ -129,6 +137,8 @@ export default function LibraryScreen({ navigation }: Props) {
         onPress={onImport}
         disabled={busy}
         activeOpacity={0.85}
+        accessibilityRole="button"
+        accessibilityLabel={busy ? '가져오는 중' : '파일 가져오기'}
       >
         {busy ? (
           <ActivityIndicator color={p.onPrimary} />

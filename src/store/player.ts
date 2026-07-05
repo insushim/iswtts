@@ -213,6 +213,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
       const clamped = Math.max(0, Math.min(i, sentences.length - 1));
       set({ index: clamped, wordStart: 0, wordLen: 0 });
       if (playing) speakCurrent();
+      else {
+        // 정지 중 이동도 진행률 저장(next/prev와 동일 동작 — 일관성).
+        const { docId } = get();
+        if (docId) useLibrary.getState().setProgress(docId, clamped, sentences.length);
+      }
     },
 
     unload: () => {

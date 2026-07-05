@@ -33,9 +33,29 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const s = useSettings();
   const [voices, setVoices] = useState<EngineVoice[]>([]);
+  const [previewFail, setPreviewFail] = useState(false);
 
   useEffect(() => {
-    systemEngine.getVoices().then(setVoices);
+    let alive = true;
+    systemEngine
+      .getVoices()
+      .then((v) => {
+        if (alive) setVoices(v);
+      })
+      .catch(() => {
+        /* 음성 목록 조회 실패 → 빈 목록 안내가 대신 표시됨 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // 화면을 떠나면 미리듣기 발화도 정지(안 하면 뒤로 간 뒤에도 계속 재생됨).
+  useEffect(() => {
+    return () => {
+      Speech.stop();
+      edgeEngine.stop();
+    };
   }, []);
 
   // expo-speech의 Voice.quality는 현재 'Enhanced' | 'Default'만 반환한다.
@@ -77,12 +97,16 @@ export default function SettingsScreen() {
     // 두 엔진 모두 정지 후, 선택 엔진으로 샘플 발화.
     Speech.stop();
     edgeEngine.stop();
+    setPreviewFail(false);
     const engine = getEngine(s.engineId);
     const vId = voiceId ?? (isEdge ? s.edgeVoiceId : s.voiceId);
     engine.speak(
       sampleText(),
       { rate: s.rate, pitch: s.pitch, language: s.language, voiceId: vId },
-      {},
+      {
+        // 실패 시 무음+무피드백이면 사용자가 원인을 알 수 없다 → 안내 텍스트 표시.
+        onError: () => setPreviewFail(true),
+      },
     );
   };
 
@@ -100,11 +124,21 @@ export default function SettingsScreen() {
     <View style={styles.row}>
       <Text style={[styles.rowLabel, { color: p.text }]}>{label}</Text>
       <View style={styles.stepper}>
-        <TouchableOpacity onPress={onDec} style={[styles.stepBtn, { borderColor: p.border }]}>
+        <TouchableOpacity
+          onPress={onDec}
+          style={[styles.stepBtn, { borderColor: p.border }]}
+          accessibilityRole="button"
+          accessibilityLabel={`${label} 줄이기, 현재 ${value}`}
+        >
           <Text style={[styles.stepTxt, { color: p.text }]}>−</Text>
         </TouchableOpacity>
         <Text style={[styles.stepVal, { color: p.text }]}>{value}</Text>
-        <TouchableOpacity onPress={onInc} style={[styles.stepBtn, { borderColor: p.border }]}>
+        <TouchableOpacity
+          onPress={onInc}
+          style={[styles.stepBtn, { borderColor: p.border }]}
+          accessibilityRole="button"
+          accessibilityLabel={`${label} 늘리기, 현재 ${value}`}
+        >
           <Text style={[styles.stepTxt, { color: p.text }]}>＋</Text>
         </TouchableOpacity>
       </View>
@@ -132,6 +166,9 @@ export default function SettingsScreen() {
             <TouchableOpacity
               key={l.code}
               onPress={() => s.set({ language: l.code, voiceId: undefined, edgeVoiceId: undefined })}
+              accessibilityRole="button"
+              accessibilityLabel={`언어 ${l.label}`}
+              accessibilityState={{ selected: active }}
               style={[
                 styles.chip,
                 { borderColor: active ? p.primary : p.border, backgroundColor: active ? p.primary : 'transparent' },
@@ -150,6 +187,9 @@ export default function SettingsScreen() {
         <TouchableOpacity
           onPress={() => s.set({ engineId: 'system' })}
           style={[styles.engine, { borderColor: !isEdge ? p.primary : p.border }]}
+          accessibilityRole="button"
+          accessibilityLabel="기본 기기 내장 음성 엔진, 오프라인"
+          accessibilityState={{ selected: !isEdge }}
         >
           <Text style={{ color: p.text, fontWeight: !isEdge ? '800' : '600' }}>
             기본 (기기 내장) · 오프라인
@@ -165,6 +205,9 @@ export default function SettingsScreen() {
             s.set({ engineId: 'edge' });
           }}
           style={[styles.engine, { borderColor: isEdge ? p.primary : p.border }]}
+          accessibilityRole="button"
+          accessibilityLabel="고품질 온라인 Edge 신경망 음성 엔진"
+          accessibilityState={{ selected: isEdge }}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <Text style={{ color: p.text, fontWeight: isEdge ? '800' : '600' }}>
@@ -176,7 +219,8 @@ export default function SettingsScreen() {
           </View>
           <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 3 }}>
             훨씬 자연스러운 사람 같은 목소리. 무료지만 인터넷이 필요하고, 연결이 안 되면
-            자동으로 기본 음성으로 읽어줍니다. (데이터 사용)
+            자동으로 기본 음성으로 읽어줍니다. (데이터 사용){'\n'}
+            ※ 이 엔진 사용 시 읽는 문장이 음성 생성을 위해 Microsoft 서버로 전송됩니다.
           </Text>
         </TouchableOpacity>
       </View>
@@ -207,9 +251,19 @@ export default function SettingsScreen() {
         onInc={() => s.set({ fontScale: clamp(s.fontScale + 0.1, 0.8, 1.8) })}
       />
 
-      <TouchableOpacity onPress={() => preview()} style={[styles.previewBtn, { backgroundColor: p.primary }]}>
+      <TouchableOpacity
+        onPress={() => preview()}
+        style={[styles.previewBtn, { backgroundColor: p.primary }]}
+        accessibilityRole="button"
+        accessibilityLabel="현재 설정으로 미리듣기"
+      >
         <Text style={{ color: p.onPrimary, fontWeight: '800', fontSize: 15 }}>🔊 현재 설정으로 미리듣기</Text>
       </TouchableOpacity>
+      {previewFail && (
+        <Text style={{ color: p.subtext, fontSize: 12, marginTop: 6, textAlign: 'center' }}>
+          미리듣기에 실패했습니다 — {isEdge ? '인터넷 연결을 확인해주세요.' : '기기 TTS 설정을 확인해주세요.'}
+        </Text>
+      )}
 
       <Text style={[styles.section, { color: p.subtext }]}>
         음성 {langVoices.length ? `(${langVoices.length})` : ''}
@@ -224,6 +278,9 @@ export default function SettingsScreen() {
           <TouchableOpacity
             onPress={() => selectVoice(undefined)}
             style={[styles.voice, { borderColor: !selectedVoiceId ? p.primary : p.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="기본 음성"
+            accessibilityState={{ selected: !selectedVoiceId }}
           >
             <Text style={{ color: p.text, fontWeight: '600' }}>기본 음성</Text>
           </TouchableOpacity>
@@ -240,6 +297,9 @@ export default function SettingsScreen() {
                   style={{ flex: 1 }}
                   onPress={() => selectVoice(v.id)}
                   activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={`음성 ${v.name} 선택`}
+                  accessibilityState={{ selected: active }}
                 >
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                     <Text
@@ -260,6 +320,8 @@ export default function SettingsScreen() {
                   onPress={() => preview(v.id)}
                   hitSlop={10}
                   style={[styles.voicePlay, { borderColor: p.border }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`음성 ${v.name} 미리듣기`}
                 >
                   <Text style={{ color: p.primary, fontSize: 15 }}>▶</Text>
                 </TouchableOpacity>

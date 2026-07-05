@@ -12,6 +12,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { usePalette } from '../lib/theme';
+import { splitHighlight } from '../lib/highlight';
 import { usePlayer } from '../store/player';
 import { useLibrary } from '../store/library';
 import { useSettings } from '../store/settings';
@@ -94,10 +95,7 @@ export default function PlayerScreen({ route, navigation }: Props) {
   const smallSize = Math.round(16 * fontScale);
 
   // 현재 문장을 [앞 · 하이라이트 단어 · 뒤]로 분해
-  const hlEnd = wordLen > 0 ? wordStart + wordLen : 0;
-  const before = wordLen > 0 ? cur.slice(0, wordStart) : cur;
-  const word = wordLen > 0 ? cur.slice(wordStart, hlEnd) : '';
-  const after = wordLen > 0 ? cur.slice(hlEnd) : '';
+  const { before, word, after } = splitHighlight(cur, wordStart, wordLen);
 
   // 배속 프리셋. Android setSpeechRate는 피치 보존 배속(최대 10×, 기기 엔진에 따라 상한).
   // iOS AVSpeech는 상한이 ~2×라 2× 초과는 무효 → iOS에선 2×까지만 노출.
@@ -128,7 +126,12 @@ export default function PlayerScreen({ route, navigation }: Props) {
     <View style={[styles.root, { backgroundColor: p.bg }]}>
       {/* 상단 바 */}
       <View style={[styles.topbar, { paddingTop: insets.top + 6 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={12}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel="목록으로 돌아가기"
+        >
           <Text style={[styles.back, { color: p.subtext }]}>‹ 목록</Text>
         </TouchableOpacity>
         <Text style={[styles.count, { color: p.subtext }]}>
@@ -195,7 +198,13 @@ export default function PlayerScreen({ route, navigation }: Props) {
 
       {/* 컨트롤 */}
       <View style={[styles.controls, { paddingBottom: insets.bottom + 20 }]}>
-        <TouchableOpacity onPress={() => player.prev()} hitSlop={10} style={styles.ctrlBtn}>
+        <TouchableOpacity
+          onPress={() => player.prev()}
+          hitSlop={10}
+          style={styles.ctrlBtn}
+          accessibilityRole="button"
+          accessibilityLabel="이전 문장"
+        >
           <Text style={[styles.ctrlIcon, { color: p.text }]}>⏮</Text>
         </TouchableOpacity>
 
@@ -203,19 +212,29 @@ export default function PlayerScreen({ route, navigation }: Props) {
           onPress={() => player.toggle()}
           style={[styles.playBtn, { backgroundColor: p.primary }]}
           activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel={playing ? '일시정지' : '재생'}
         >
           <Text style={[styles.playIcon, { color: p.onPrimary }]}>
             {playing ? '⏸' : '▶'}
           </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity onPress={() => player.next()} hitSlop={10} style={styles.ctrlBtn}>
+        <TouchableOpacity
+          onPress={() => player.next()}
+          hitSlop={10}
+          style={styles.ctrlBtn}
+          accessibilityRole="button"
+          accessibilityLabel="다음 문장"
+        >
           <Text style={[styles.ctrlIcon, { color: p.text }]}>⏭</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
           onPress={cycleRate}
           style={[styles.rateBtn, { borderColor: p.border }]}
+          accessibilityRole="button"
+          accessibilityLabel={`재생 속도 ${rate}배. 누르면 다음 단계로 변경`}
         >
           <Text style={[styles.rateText, { color: p.text }]}>{rate}×</Text>
         </TouchableOpacity>

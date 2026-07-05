@@ -251,17 +251,22 @@ export class EdgeTtsEngine implements TtsEngine {
             );
           }
         } else {
-          const buf: ArrayBuffer = data;
-          if (!buf || buf.byteLength < 2) return;
-          const view = new DataView(buf);
-          const headerLen = view.getUint16(0, false);
-          if (2 + headerLen > buf.byteLength) return;
-          const headerBytes = new Uint8Array(buf, 2, headerLen);
-          let hs = '';
-          for (let i = 0; i < headerBytes.length; i++) hs += String.fromCharCode(headerBytes[i]);
-          if (!hs.includes('Path:audio')) return;
-          const audio = new Uint8Array(buf, 2 + headerLen);
-          if (audio.byteLength > 0) audioChunks.push(new Uint8Array(audio));
+          // 바이너리 프레임 파싱 — malformed 프레임이 핸들러 내부에서 uncaught 예외로 새지 않게 가드.
+          try {
+            const buf: ArrayBuffer = data;
+            if (!buf || buf.byteLength < 2) return;
+            const view = new DataView(buf);
+            const headerLen = view.getUint16(0, false);
+            if (2 + headerLen > buf.byteLength) return;
+            const headerBytes = new Uint8Array(buf, 2, headerLen);
+            let hs = '';
+            for (let i = 0; i < headerBytes.length; i++) hs += String.fromCharCode(headerBytes[i]);
+            if (!hs.includes('Path:audio')) return;
+            const audio = new Uint8Array(buf, 2 + headerLen);
+            if (audio.byteLength > 0) audioChunks.push(new Uint8Array(audio));
+          } catch (e) {
+            done(e instanceof Error ? e : new Error(String(e)));
+          }
         }
       };
     });

@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { usePlayer } from '../store/player';
+import { splitHighlight } from '../lib/highlight';
 
 // PiP(작은 창) 전용 최소 화면 — 컨트롤 없이 현재 문장 자막만 크게. 재생은 백그라운드로 계속된다.
 export default function PipView() {
@@ -10,10 +11,7 @@ export default function PipView() {
   const wordLen = usePlayer((s) => s.wordLen);
 
   const cur = sentences[index] || '';
-  const hlEnd = wordLen > 0 ? wordStart + wordLen : 0;
-  const before = wordLen > 0 ? cur.slice(0, wordStart) : cur;
-  const word = wordLen > 0 ? cur.slice(wordStart, hlEnd) : '';
-  const after = wordLen > 0 ? cur.slice(hlEnd) : '';
+  const { before, word, after } = splitHighlight(cur, wordStart, wordLen);
 
   return (
     <View style={styles.root}>

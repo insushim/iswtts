@@ -6,6 +6,7 @@ import {
 } from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { APP_VERSION, RELEASE_REPO } from './config';
+import { compareVersions } from './version';
 
 // 앱 실행 시 GitHub 최신 릴리스를 확인 → 새 버전이면 안내 → APK 다운로드 → 안드로이드 설치창 오픈.
 // 사이드로드 앱 특성상 '무음 강제설치'는 불가(보안) — 사용자가 설치창에서 한 번 탭한다.
@@ -14,18 +15,6 @@ import { APP_VERSION, RELEASE_REPO } from './config';
 const GITHUB_API_URL = `https://api.github.com/repos/${RELEASE_REPO}/releases/latest`;
 
 let updateInProgress = false;
-
-function compareVersions(current: string, latest: string): number {
-  const c = current.replace(/^v/, '').split('.').map(Number);
-  const l = latest.replace(/^v/, '').split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const cv = c[i] || 0;
-    const lv = l[i] || 0;
-    if (lv > cv) return 1;
-    if (lv < cv) return -1;
-  }
-  return 0;
-}
 
 async function startUpdate(apkUrl: string, version: string): Promise<void> {
   if (updateInProgress) return;

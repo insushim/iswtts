@@ -4,7 +4,7 @@ import type { TtsEngine } from './TtsEngine';
 import { systemEngine } from './ExpoSpeechEngine';
 import { edgeEngine } from './edge/EdgeTtsEngine';
 
-export type EngineId = 'system' | 'edge';
+export type { EngineId } from '../types';
 
 export function getEngine(id?: string): TtsEngine {
   return id === 'edge' ? edgeEngine : systemEngine;

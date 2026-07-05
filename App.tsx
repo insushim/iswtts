@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { useColorScheme, Platform } from 'react-native';
+import { useColorScheme, Platform, Alert } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -14,6 +14,11 @@ import PipView from './src/components/PipView';
 import { usePlayer } from './src/store/player';
 import { checkForUpdate } from './src/lib/appUpdate';
 import { sweepCache } from './src/lib/cacheSweep';
+import { installCrashLogger, readLastCrash, clearLastCrash } from './src/lib/crashLog';
+import { APP_VERSION } from './src/lib/config';
+
+// JS 치명 오류를 기기 파일로 남기는 로컬 크래시 로거(외부 전송 없음). 최대한 이른 시점에 설치.
+installCrashLogger(APP_VERSION);
 
 export type RootStackParamList = {
   Library: undefined;
@@ -29,8 +34,17 @@ export default function App() {
   const playing = usePlayer((s) => s.playing);
 
   // 앱 실행 시: 캐시 잔존물 청소(중단된 합성 mp3·설치 끝난 APK) 후 최신 릴리스 확인.
+  // 직전 실행이 크래시로 끝났으면 저장된 로그를 1회 안내(확인 시 삭제).
   useEffect(() => {
     sweepCache();
+    const crash = readLastCrash();
+    if (crash) {
+      Alert.alert(
+        '이전 실행 오류 보고',
+        `앱이 예기치 않게 종료된 기록이 있습니다. 반복되면 이 내용을 개발자에게 전달해주세요.\n\n${crash.slice(0, 400)}`,
+        [{ text: '확인', onPress: clearLastCrash }],
+      );
+    }
     const t = setTimeout(() => {
       checkForUpdate();
     }, 1500);
