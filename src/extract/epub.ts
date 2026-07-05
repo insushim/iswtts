@@ -1,5 +1,6 @@
 import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
 import JSZip from 'jszip';
+import { stripTagBlocks } from '../lib/html';
 
 // EPUB(=zip) 온디바이스 텍스트 추출. container.xml → OPF → spine 순서대로 XHTML 본문 추출.
 export async function extractEpub(uri: string): Promise<string> {
@@ -48,10 +49,11 @@ export async function extractEpub(uri: string): Promise<string> {
 }
 
 function htmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<head[\s\S]*?<\/head>/gi, ' ')
+  // stripTagBlocks: 기존 [\s\S]*? 정규식의 O(n²) 폭주(손상 파일 ANR) 회피 — src/lib/html.ts 참조.
+  let t = stripTagBlocks(html, 'script');
+  t = stripTagBlocks(t, 'style');
+  t = stripTagBlocks(t, 'head');
+  return t
     .replace(/<\/(p|div|h[1-6]|li|br|tr|section|article)>/gi, '\n')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')

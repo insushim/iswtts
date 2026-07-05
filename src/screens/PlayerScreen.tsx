@@ -66,11 +66,24 @@ export default function PlayerScreen({ route, navigation }: Props) {
     };
   }, []);
 
-  // 재생 중 화면 켜두기
+  // 재생 중 화면 켜두기 (+ 언마운트 시 해제 — 없으면 화면을 나가도 계속 깨어 있어 배터리 소모)
   useEffect(() => {
     if (player.playing) activateKeepAwakeAsync('iwtts');
     else deactivateKeepAwake('iwtts');
   }, [player.playing]);
+  useEffect(() => {
+    return () => {
+      deactivateKeepAwake('iwtts');
+    };
+  }, []);
+
+  // 재생 실패·폴백 알림 배너 — 5초 뒤 자동 소멸.
+  const notice = player.notice;
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => usePlayer.getState().setNotice(null), 5000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   const { sentences, index, wordStart, wordLen, playing } = player;
   const cur = sentences[index] || '';
@@ -160,6 +173,13 @@ export default function PlayerScreen({ route, navigation }: Props) {
         )}
       </View>
 
+      {/* 재생 실패·폴백 알림 배너 */}
+      {!!notice && (
+        <View style={[styles.notice, { backgroundColor: p.border }]}>
+          <Text style={[styles.noticeText, { color: p.text }]}>{notice}</Text>
+        </View>
+      )}
+
       {/* 진행 바 */}
       <View style={[styles.track, { backgroundColor: p.border }]}>
         <View
@@ -225,6 +245,14 @@ const styles = StyleSheet.create({
   },
   neighbor: { textAlign: 'center', lineHeight: 24 },
   current: { textAlign: 'center', fontWeight: '700', lineHeight: 40 },
+  notice: {
+    marginHorizontal: 20,
+    marginBottom: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  noticeText: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
   track: { height: 5, marginHorizontal: 20, borderRadius: 3, overflow: 'hidden' },
   fill: { height: 5, borderRadius: 3 },
   controls: {

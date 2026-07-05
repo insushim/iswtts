@@ -12,7 +12,7 @@ import * as Speech from 'expo-speech';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { usePalette } from '../lib/theme';
 import { useSettings } from '../store/settings';
-import { usePlayer } from '../store/player';
+import { usePlayer, resetEdgeCircuit } from '../store/player';
 import { getEngine, systemEngine, edgeEngine } from '../tts';
 import { EDGE_VOICES } from '../tts/edge/voices';
 import { APP_VERSION } from '../lib/config';
@@ -159,7 +159,11 @@ export default function SettingsScreen() {
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          onPress={() => s.set({ engineId: 'edge' })}
+          onPress={() => {
+            // 사용자가 명시적으로 Edge를 다시 고르면 실패 백오프(서킷)도 초기화해 즉시 재시도.
+            resetEdgeCircuit();
+            s.set({ engineId: 'edge' });
+          }}
           style={[styles.engine, { borderColor: isEdge ? p.primary : p.border }]}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>

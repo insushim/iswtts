@@ -4,19 +4,34 @@ import { WebView } from 'react-native-webview';
 import {
   _registerPdfPump,
   _unregisterPdfPump,
+  _failAllPdfRequests,
   type PdfRequest,
 } from '../extract/pdfBridge';
 
 // pdf.js를 로드한 숨겨진 WebView. base64 PDF를 받아 페이지별 텍스트를 추출해 돌려준다.
-// v1: pdf.js를 CDN에서 로드(임포트 시 인터넷 필요). 오프라인 PDF는 후속(번들 pdf.js).
-const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.6.82';
+// v1.3: CDN 2원화(cdnjs → jsdelivr 폴백) + 전부 실패 시 fatal 통지(브릿지 타임아웃과 이중 안전망).
+// 완전 오프라인(pdf.js 앱 내 번들)은 후속 — 임포트 시에는 인터넷 필요.
+const PDFJS_VERSION = '4.6.82';
 
 const HTML = `<!doctype html><html><head><meta charset="utf-8"/>
-<script src="${PDFJS}/pdf.min.mjs" type="module"></script>
 <script type="module">
-  import * as pdfjsLib from '${PDFJS}/pdf.min.mjs';
-  pdfjsLib.GlobalWorkerOptions.workerSrc = '${PDFJS}/pdf.worker.min.mjs';
   function post(o){ window.ReactNativeWebView.postMessage(JSON.stringify(o)); }
+  const CDNS = [
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}',
+    'https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build',
+  ];
+  let pdfjsLib = null;
+  (async () => {
+    for (const base of CDNS) {
+      try {
+        pdfjsLib = await import(base + '/pdf.min.mjs');
+        pdfjsLib.GlobalWorkerOptions.workerSrc = base + '/pdf.worker.min.mjs';
+        post({ ready: true });
+        return;
+      } catch (e) { /* 다음 CDN 시도 */ }
+    }
+    post({ fatal: 'pdf.js 로드 실패 — 인터넷 연결을 확인해주세요.' });
+  })();
   function b64ToBytes(b64){
     const bin = atob(b64); const len = bin.length; const bytes = new Uint8Array(len);
     for (let i=0;i<len;i++) bytes[i]=bin.charCodeAt(i);
@@ -24,6 +39,7 @@ const HTML = `<!doctype html><html><head><meta charset="utf-8"/>
   }
   window.__extract = async function(id, b64){
     try{
+      if (!pdfjsLib) throw new Error('pdf.js 미로드');
       const data = b64ToBytes(b64);
       const pdf = await pdfjsLib.getDocument({ data }).promise;
       let out = [];
@@ -43,22 +59,27 @@ const HTML = `<!doctype html><html><head><meta charset="utf-8"/>
       post({ id, ok:true, text: out.join('\\n') });
     }catch(e){ post({ id, ok:false, error: String(e && e.message || e) }); }
   };
-  post({ ready:true });
 </script></head><body></body></html>`;
 
 export default function PdfExtractor() {
   const webRef = useRef<WebView>(null);
   const pending = useRef<Map<string, PdfRequest>>(new Map());
   const ready = useRef(false);
+  const failed = useRef<string | null>(null); // pdf.js 로드 영구 실패 사유(전 CDN 실패)
   const queue = useRef<PdfRequest[]>([]);
 
   useEffect(() => {
     const send = (req: PdfRequest) => {
+      if (failed.current) {
+        req.reject(new Error(failed.current));
+        return;
+      }
       pending.current.set(req.id, req);
       if (ready.current) fire(req);
       else queue.current.push(req);
     };
-    _registerPdfPump(send);
+    // 두 번째 인자 = 브릿지 타임아웃 시 pending 맵 정리 훅(누수 방지).
+    _registerPdfPump(send, (id) => pending.current.delete(id));
     return () => _unregisterPdfPump();
   }, []);
 
@@ -80,6 +101,17 @@ export default function PdfExtractor() {
       ready.current = true;
       const q = queue.current.splice(0);
       q.forEach(fire);
+      return;
+    }
+    if (msg.fatal) {
+      // 모든 CDN 실패 → 대기 중인 요청 전부 즉시 실패(25초 타임아웃을 기다리지 않게).
+      failed.current = String(msg.fatal);
+      const err = new Error(failed.current);
+      const q = queue.current.splice(0);
+      q.forEach((r) => r.reject(err));
+      pending.current.forEach((r) => r.reject(err));
+      pending.current.clear();
+      _failAllPdfRequests(err);
       return;
     }
     const req = pending.current.get(msg.id);

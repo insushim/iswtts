@@ -13,6 +13,7 @@ import PdfExtractor from './src/components/PdfExtractor';
 import PipView from './src/components/PipView';
 import { usePlayer } from './src/store/player';
 import { checkForUpdate } from './src/lib/appUpdate';
+import { sweepCache } from './src/lib/cacheSweep';
 
 export type RootStackParamList = {
   Library: undefined;
@@ -27,8 +28,9 @@ export default function App() {
   const { isInPipMode } = ExpoPip.useIsInPip();
   const playing = usePlayer((s) => s.playing);
 
-  // 앱 실행 시 최신 릴리스 확인(새 버전이면 안내 → 다운로드 → 설치창)
+  // 앱 실행 시: 캐시 잔존물 청소(중단된 합성 mp3·설치 끝난 APK) 후 최신 릴리스 확인.
   useEffect(() => {
+    sweepCache();
     const t = setTimeout(() => {
       checkForUpdate();
     }, 1500);

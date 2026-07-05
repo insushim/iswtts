@@ -71,11 +71,12 @@ export async function checkForUpdate(): Promise<void> {
     const latest = (release.tag_name || '').replace(/^v/, '');
     if (!latest || compareVersions(APP_VERSION, latest) <= 0) return;
 
-    // 고정명 애셋 우선, 없으면 아무 .apk
+    // 고정명 애셋만 신뢰. ("아무 .apk나" 폴백은 릴리스에 다른 apk가 섞였을 때
+    // 엉뚱한 파일이 설치 후보가 되는 경로라 제거 — 릴리스 스크립트가 고정명을 보장한다.)
     const assets = release.assets || [];
-    const apk =
-      assets.find((a: any) => a.name === 'SoriBook-latest.apk' && a.browser_download_url) ||
-      assets.find((a: any) => a.name?.endsWith('.apk') && a.browser_download_url);
+    const apk = assets.find(
+      (a: any) => a.name === 'SoriBook-latest.apk' && a.browser_download_url,
+    );
     if (!apk) return;
 
     Alert.alert(
