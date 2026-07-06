@@ -1,0 +1,18 @@
+diff --git a/node_modules/react-native-sherpa-onnx/android/src/main/java/com/sherpaonnx/SherpaOnnxTtsHelper.kt b/node_modules/react-native-sherpa-onnx/android/src/main/java/com/sherpaonnx/SherpaOnnxTtsHelper.kt
+index c4f01eb..1040838 100644
+--- a/node_modules/react-native-sherpa-onnx/android/src/main/java/com/sherpaonnx/SherpaOnnxTtsHelper.kt
++++ b/node_modules/react-native-sherpa-onnx/android/src/main/java/com/sherpaonnx/SherpaOnnxTtsHelper.kt
+@@ -593,7 +593,12 @@ internal class SherpaOnnxTtsHelper(
+             promise.reject("TTS_GENERATE_ERROR", "TTS not initialized")
+             return
+           }
+-          tts.generateWithCallback(text, sid, speed, ttsChunkCallbackForJni(sentenceChunkSizes))
++          // PATCH(iwtts): 참조오디오 없는 일반 모델(Supertonic 등)도 GenerationConfig 경로로
++          // 합성해 extra(예: lang=ko)가 네이티브에 전달되게 한다. 원본은 generateWithCallback
++          // (text,sid,speed)만 호출해 extra 를 버렸고, 그 결과 Supertonic 이 언어 기본값(영어)으로
++          // 한국어를 읽어 발음이 깨졌다. GenerationConfig 는 sid/speed 도 포함하므로 동작 동일.
++          val config = parseGenerationConfig(options) ?: GenerationConfig(speed = speed, sid = sid)
++          tts.generateWithConfigAndCallback(text, config, ttsChunkCallbackForJni(sentenceChunkSizes))
+         }
+       }
+ 
