@@ -1,36 +1,30 @@
 import { edgeSsmlMult, edgeSsmlRatePct, edgePlaybackRate } from '../tts/edge/rate';
 import { resolveEdgeVoice, EDGE_VOICES } from '../tts/edge/voices';
 
-describe('edge 배속 분담(기하평균 — 양축 극단 회피)', () => {
+describe('edge 배속 분담(기하평균 + 총 2× 클램프)', () => {
   test('1× — 둘 다 중립', () => {
     expect(edgeSsmlRatePct(1)).toBe('+0%');
     expect(edgePlaybackRate(1)).toBe(1);
   });
 
-  test('균등 분담 — 두 축이 √rate 씩, 어느 쪽도 극단 금지(핵심 불변식)', () => {
-    for (const r of [1.2, 1.5, 2, 2.5, 3, 4]) {
+  test('≤2× — 균등 분담: 두 축이 √rate 씩, 어느 쪽도 극단 금지(핵심 불변식)', () => {
+    for (const r of [1.2, 1.5, 1.8, 2]) {
       const ssml = edgeSsmlMult(r);
       const pb = edgePlaybackRate(r);
       expect(ssml * pb).toBeCloseTo(r, 5); // 곱 = 요청 배속
-      expect(ssml).toBeLessThanOrEqual(2); // 씹힘 구간(+100%) 미진입 (≤4×)
-      expect(pb).toBeLessThanOrEqual(2); // Sonic 상한
+      expect(ssml).toBeLessThanOrEqual(Math.SQRT2 + 1e-9); // SSML 포화(+100%)에 여유
+      expect(pb).toBeLessThanOrEqual(Math.SQRT2 + 1e-9); // Sonic 겹침 파괴 구간 회피
     }
-    // 2× 대표값: 합성 +41% × 재생 1.414
+    // 2× 대표값: 합성 +41% × 재생 1.414 (Whisper CER 실측 최저 조합)
     expect(edgeSsmlRatePct(2)).toBe('+41%');
     expect(edgePlaybackRate(2)).toBeCloseTo(Math.SQRT2, 3);
-    // 3×: 1.732 × 1.732
-    expect(edgePlaybackRate(3)).toBeCloseTo(Math.sqrt(3), 3);
   });
 
-  test('4× 초과 — 재생속도 2.0 고정, 초과분은 SSML 흡수', () => {
-    expect(edgePlaybackRate(5)).toBe(2);
-    expect(edgeSsmlMult(5)).toBeCloseTo(2.5, 5);
-    expect(edgeSsmlRatePct(6)).toBe('+200%');
-  });
-
-  test('상한 — 6× 초과 요청은 실효 6× 로 클램프', () => {
-    expect(edgeSsmlRatePct(10)).toBe('+200%');
-    expect(edgePlaybackRate(10)).toBe(2);
+  test('2× 초과 — 실효 2× 클램프(초과 배속은 엔진 전환이 담당, rate.ts 는 품질 보장 상한 고수)', () => {
+    for (const r of [2.5, 3, 6, 10]) {
+      expect(edgeSsmlMult(r)).toBeCloseTo(edgeSsmlMult(2), 5);
+      expect(edgePlaybackRate(r)).toBeCloseTo(edgePlaybackRate(2), 5);
+    }
   });
 
   test('저속(<1×) — 신경망 합성(SSML)이 전담, 재생속도 1×', () => {

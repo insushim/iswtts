@@ -322,6 +322,23 @@ export default function SettingsScreen() {
             ※ 이 엔진 사용 시 읽는 문장이 음성 생성을 위해 Microsoft 서버로 전송됩니다.
           </Text>
         </TouchableOpacity>
+        {isEdge && (
+          <TouchableOpacity
+            onPress={() => s.set({ edgeHighSpeedFallback: !s.edgeHighSpeedFallback })}
+            style={[styles.engine, { borderColor: p.border }]}
+            accessibilityRole="switch"
+            accessibilityLabel="2배속 초과 시 기본 음성으로 자동 전환"
+            accessibilityState={{ checked: s.edgeHighSpeedFallback }}
+          >
+            <Text style={{ color: p.text, fontWeight: '600' }}>
+              {s.edgeHighSpeedFallback ? '☑' : '☐'} 2배속 초과 시 기본 음성으로 자동 전환
+            </Text>
+            <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 3 }}>
+              온라인 음성은 기술적으로 2배속까지만 또렷합니다. 끄면 온라인 음성을 유지하는
+              대신 속도가 최대 2배속으로 제한됩니다.
+            </Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           onPress={() => {
             if (modelState === 'ready') {

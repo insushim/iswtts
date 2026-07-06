@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { TtsEngine } from '../tts/TtsEngine';
 import { getEngine, systemEngine } from '../tts';
+import { EDGE_MAX_RATE } from '../tts/edge/rate';
 import { useSettings } from './settings';
 import { useLibrary } from './library';
 import {
@@ -72,19 +73,22 @@ export type PlayerState = {
   unload: () => void;
 };
 
-function speakParams() {
+// 엔진마다 음성 식별자 체계가 다르다 → "실제 발화할 엔진"(자동 전환 반영) 기준으로 voiceId 전달.
+function speakParams(engineId: string) {
   const s = useSettings.getState();
   return {
     rate: s.rate,
     pitch: s.pitch,
     language: s.language,
-    // 엔진마다 음성 식별자 체계가 다르다 → 선택 엔진에 맞는 voiceId 전달.
     voiceId:
-      s.engineId === 'edge' ? s.edgeVoiceId
-      : s.engineId === 'sherpa' ? s.sherpaVoiceId
+      engineId === 'edge' ? s.edgeVoiceId
+      : engineId === 'sherpa' ? s.sherpaVoiceId
       : s.voiceId,
   };
 }
+
+// Edge 2× 초과 자동 전환 안내는 앱 실행당 1회만(문장마다 배너가 뜨면 소음).
+let highSpeedNoticeShown = false;
 
 export const usePlayer = create<PlayerState>((set, get) => {
   const speakCurrent = () => {
@@ -92,9 +96,19 @@ export const usePlayer = create<PlayerState>((set, get) => {
     if (!sentences.length || index < 0 || index >= sentences.length) return;
 
     // 서킷 열림(연속 실패 백오프) 중엔 해당 엔진을 건너뛰고 시스템으로 — 백오프가 끝나면 자동 재시도.
-    const wantId = useSettings.getState().engineId;
-    const engineId =
+    const settings = useSettings.getState();
+    const wantId = settings.engineId;
+    let engineId =
       wantId !== 'system' && Date.now() < (engineBlockedUntil[wantId] || 0) ? 'system' : wantId;
+    // Edge 는 2× 초과를 깨끗하게 못 낸다(SSML 포화+스트레치 겹침 음절소실 — Whisper CER 실측).
+    // 기본은 시스템 TTS 자동 전환(고배속 또렷). 설정에서 끄면 Edge 음성 유지 + 실효 2× 클램프.
+    if (engineId === 'edge' && settings.rate > EDGE_MAX_RATE && settings.edgeHighSpeedFallback) {
+      engineId = 'system';
+      if (!highSpeedNoticeShown) {
+        highSpeedNoticeShown = true;
+        set({ notice: '2배속 초과는 온라인 음성 품질이 보장되지 않아 기본 음성으로 낭독합니다. (설정에서 변경 가능)' });
+      }
+    }
     const engine = getEngine(engineId);
     // 엔진 전환 시에만 이전 엔진을 완전 정지(그 엔진의 prefetch 캐시까지 비움).
     // 같은 엔진이면 stop()을 부르지 않는다 — engine.speak()가 현재 재생만 끊고 prefetch 캐시는 보존해,
@@ -130,7 +144,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     };
 
     const sentence = sentences[index];
-    engine.speak(sentence, speakParams(), {
+    engine.speak(sentence, speakParams(engineId), {
       ...handlers,
       onError: () => {
         if (myEpoch !== epoch) return;
@@ -147,7 +161,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
           }
           engine.stop(); // 잔여 재생·prefetch 캐시(mp3/wav) 정리(폴백 후 누수 방지)
           activeEngine = systemEngine;
-          systemEngine.speak(sentence, { ...speakParams(), voiceId: useSettings.getState().voiceId }, {
+          systemEngine.speak(sentence, speakParams('system'), {
             ...handlers,
             onError: () => {
               if (myEpoch !== epoch) return;
@@ -165,7 +179,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     // 다음 문장을 미리 합성(온라인 엔진의 문장 간 딜레이 제거). 시스템 엔진은 prefetch 미구현 → no-op.
     const nextIdx = index + 1;
     if (nextIdx < sentences.length) {
-      engine.prefetch?.(sentences[nextIdx], speakParams());
+      engine.prefetch?.(sentences[nextIdx], speakParams(engineId));
     }
   };
 
