@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -6,15 +6,24 @@ import {
   ScrollView,
   TouchableOpacity,
   Platform,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Speech from 'expo-speech';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { usePalette } from '../lib/theme';
 import { useSettings } from '../store/settings';
-import { usePlayer, resetEdgeCircuit } from '../store/player';
-import { getEngine, systemEngine, edgeEngine } from '../tts';
+import { usePlayer, resetEngineCircuit } from '../store/player';
+import { getEngine, systemEngine, edgeEngine, sherpaEngine } from '../tts';
 import { EDGE_VOICES } from '../tts/edge/voices';
+import {
+  isSherpaModelReady,
+  isSherpaDownloadActive,
+  downloadSherpaModel,
+  cancelSherpaDownload,
+  deleteSherpaModel,
+  SHERPA_MODEL_MB,
+} from '../lib/sherpaModel';
 import { APP_VERSION } from '../lib/config';
 import type { RootStackParamList } from '../../App';
 import type { EngineVoice } from '../tts/TtsEngine';
@@ -33,35 +42,121 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const s = useSettings();
   const [voices, setVoices] = useState<EngineVoice[]>([]);
+  const [sherpaVoices, setSherpaVoices] = useState<EngineVoice[]>([]);
   const [previewFail, setPreviewFail] = useState(false);
+  // 오프라인 모델 상태: 'checking' | 'none' | 'downloading' | 'ready'
+  const [modelState, setModelState] = useState<'checking' | 'none' | 'downloading' | 'ready'>('checking');
+  const [dlPercent, setDlPercent] = useState(0);
+  const [dlPhase, setDlPhase] = useState<'downloading' | 'extracting'>('downloading');
+  const [dlError, setDlError] = useState<string | null>(null);
+  const aliveRef = useRef(true);
+  const dlDetach = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    let alive = true;
+    aliveRef.current = true;
     systemEngine
       .getVoices()
       .then((v) => {
-        if (alive) setVoices(v);
+        if (aliveRef.current) setVoices(v);
       })
       .catch(() => {
         /* 음성 목록 조회 실패 → 빈 목록 안내가 대신 표시됨 */
       });
+    sherpaEngine.getVoices().then((v) => {
+      if (aliveRef.current) setSherpaVoices(v);
+    });
+    // 화면을 나갔다 와도 진행 중 다운로드에 다시 합류(싱글턴).
+    if (isSherpaDownloadActive()) attachToDownload();
+    else
+      isSherpaModelReady().then((ready) => {
+        if (aliveRef.current && !isSherpaDownloadActive()) setModelState(ready ? 'ready' : 'none');
+      });
     return () => {
-      alive = false;
+      aliveRef.current = false;
+      dlDetach.current?.(); // 진행률 리스너 해제(다운로드 자체는 계속)
+      dlDetach.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 화면을 떠나면 미리듣기 발화도 정지(안 하면 뒤로 간 뒤에도 계속 재생됨).
+  // 다운로드는 유지(취소는 명시 버튼으로만) — 나갔다 와도 이어받는다(ensureModel 재개).
   useEffect(() => {
     return () => {
       Speech.stop();
       edgeEngine.stop();
+      sherpaEngine.stop();
     };
   }, []);
+
+  // 진행 중(또는 새) 다운로드에 진행률 리스너를 붙이고 완료/실패를 화면 상태에 반영.
+  const attachToDownload = () => {
+    setDlError(null);
+    setModelState('downloading');
+    const { promise, detach } = downloadSherpaModel((prog) => {
+      if (!aliveRef.current) return;
+      setDlPercent(Math.max(0, Math.min(100, Math.round(prog.percent || 0))));
+      if (prog.phase) setDlPhase(prog.phase);
+    });
+    dlDetach.current = detach;
+    promise.then(
+      () => {
+        // 받자마자 곧바로 이 엔진으로 듣게 선택까지 완료(사용자 의도가 명확).
+        // 단, 다른 엔진으로 낭독 중이면 문장 중간에 목소리가 조용히 바뀌지 않게 전환 보류.
+        resetEngineCircuit('sherpa');
+        if (!usePlayer.getState().playing) {
+          useSettings.getState().set({ engineId: 'sherpa' });
+        }
+        if (aliveRef.current) setModelState('ready');
+      },
+      (e) => {
+        if (!aliveRef.current) return;
+        setModelState('none');
+        const msg = String((e as Error)?.message || e);
+        setDlError(
+          /abort/i.test(msg)
+            ? null // 사용자 취소는 오류 아님
+            : '다운로드에 실패했습니다. 인터넷 연결과 저장 공간을 확인해주세요.',
+        );
+      },
+    );
+  };
+
+  const startModelDownload = () => {
+    if (modelState === 'downloading') return;
+    setDlPercent(0);
+    setDlPhase('downloading');
+    attachToDownload();
+  };
+
+  const cancelModelDownload = () => {
+    cancelSherpaDownload();
+  };
+
+  const confirmDeleteModel = () => {
+    Alert.alert('오프라인 음성 삭제', '내려받은 음성 데이터를 삭제할까요? 필요하면 다시 받을 수 있습니다.', [
+      { text: '취소', style: 'cancel' },
+      {
+        text: '삭제',
+        style: 'destructive',
+        onPress: async () => {
+          // 재생 중 삭제 방어: 이 엔진으로 낭독 중일 수 있다 — 재생을 먼저 멈추지 않으면
+          // releaseNative 가 재생 중 인스턴스를 파괴해 onDone/onError 없이 영구 고착된다.
+          if (usePlayer.getState().playing) usePlayer.getState().pause();
+          if (useSettings.getState().engineId === 'sherpa') s.set({ engineId: 'system' });
+          await sherpaEngine.releaseNative(); // 파일을 쥔 채 지우지 않게 먼저 해제
+          await deleteSherpaModel();
+          if (aliveRef.current) setModelState('none');
+        },
+      },
+    ]);
+  };
 
   // expo-speech의 Voice.quality는 현재 'Enhanced' | 'Default'만 반환한다.
   const isHiQuality = (q?: string) => !!q && /enhanced/i.test(q);
 
   const isEdge = s.engineId === 'edge';
+  const isSherpa = s.engineId === 'sherpa';
 
   // 언어 일치 + 고품질(Enhanced/Network) 우선 정렬 → 배속에서 더 또렷한 음성이 위로.
   const systemLangVoices = voices
@@ -77,10 +172,11 @@ export default function SettingsScreen() {
     v.language.toLowerCase().startsWith(s.language.slice(0, 2).toLowerCase()),
   );
 
-  const langVoices = isEdge ? edgeLangVoices : systemLangVoices;
-  const selectedVoiceId = isEdge ? s.edgeVoiceId : s.voiceId;
+  // sherpa(다국어 단일 모델)는 화자 목록이 언어와 무관 — 필터 없이 전체.
+  const langVoices = isSherpa ? sherpaVoices : isEdge ? edgeLangVoices : systemLangVoices;
+  const selectedVoiceId = isSherpa ? s.sherpaVoiceId : isEdge ? s.edgeVoiceId : s.voiceId;
   const selectVoice = (id?: string) =>
-    s.set(isEdge ? { edgeVoiceId: id } : { voiceId: id });
+    s.set(isSherpa ? { sherpaVoiceId: id } : isEdge ? { edgeVoiceId: id } : { voiceId: id });
 
   const sampleText = () =>
     s.language.startsWith('ko')
@@ -94,12 +190,13 @@ export default function SettingsScreen() {
   const preview = (voiceId?: string) => {
     // 책 재생 중이면 먼저 정지(엔진 싱글턴 공유 → 미리듣기가 재생을 가로채 좀비 상태 방지).
     if (usePlayer.getState().playing) usePlayer.getState().pause();
-    // 두 엔진 모두 정지 후, 선택 엔진으로 샘플 발화.
+    // 모든 엔진 정지 후, 선택 엔진으로 샘플 발화.
     Speech.stop();
     edgeEngine.stop();
+    sherpaEngine.stop();
     setPreviewFail(false);
     const engine = getEngine(s.engineId);
-    const vId = voiceId ?? (isEdge ? s.edgeVoiceId : s.voiceId);
+    const vId = voiceId ?? (isSherpa ? s.sherpaVoiceId : isEdge ? s.edgeVoiceId : s.voiceId);
     engine.speak(
       sampleText(),
       { rate: s.rate, pitch: s.pitch, language: s.language, voiceId: vId },
@@ -186,12 +283,12 @@ export default function SettingsScreen() {
       <View style={{ gap: 8 }}>
         <TouchableOpacity
           onPress={() => s.set({ engineId: 'system' })}
-          style={[styles.engine, { borderColor: !isEdge ? p.primary : p.border }]}
+          style={[styles.engine, { borderColor: s.engineId === 'system' ? p.primary : p.border }]}
           accessibilityRole="button"
           accessibilityLabel="기본 기기 내장 음성 엔진, 오프라인"
-          accessibilityState={{ selected: !isEdge }}
+          accessibilityState={{ selected: s.engineId === 'system' }}
         >
-          <Text style={{ color: p.text, fontWeight: !isEdge ? '800' : '600' }}>
+          <Text style={{ color: p.text, fontWeight: s.engineId === 'system' ? '800' : '600' }}>
             기본 (기기 내장) · 오프라인
           </Text>
           <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 3 }}>
@@ -201,7 +298,7 @@ export default function SettingsScreen() {
         <TouchableOpacity
           onPress={() => {
             // 사용자가 명시적으로 Edge를 다시 고르면 실패 백오프(서킷)도 초기화해 즉시 재시도.
-            resetEdgeCircuit();
+            resetEngineCircuit('edge');
             s.set({ engineId: 'edge' });
           }}
           style={[styles.engine, { borderColor: isEdge ? p.primary : p.border }]}
@@ -223,6 +320,81 @@ export default function SettingsScreen() {
             ※ 이 엔진 사용 시 읽는 문장이 음성 생성을 위해 Microsoft 서버로 전송됩니다.
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => {
+            if (modelState === 'ready') {
+              resetEngineCircuit('sherpa');
+              s.set({ engineId: 'sherpa' });
+            } else if (modelState === 'none') {
+              startModelDownload();
+            }
+          }}
+          disabled={modelState === 'checking'}
+          style={[styles.engine, { borderColor: isSherpa ? p.primary : p.border }]}
+          accessibilityRole="button"
+          accessibilityLabel={
+            modelState === 'ready'
+              ? '고품질 오프라인 신경망 음성 엔진'
+              : `고품질 오프라인 신경망 음성 엔진, 음성 데이터 ${SHERPA_MODEL_MB}메가바이트 다운로드 필요`
+          }
+          accessibilityState={{ selected: isSherpa, disabled: modelState === 'checking' }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={{ color: p.text, fontWeight: isSherpa ? '800' : '600' }}>
+              고품질 오프라인 (신경망)
+            </Text>
+            <View style={[styles.hqBadge, { backgroundColor: p.primary }]}>
+              <Text style={{ color: p.onPrimary, fontSize: 9, fontWeight: '800' }}>NEW</Text>
+            </View>
+          </View>
+          <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 3 }}>
+            자연스러운 목소리를 인터넷 없이. 기기 안에서만 음성을 만들어 어떤 문장도 밖으로
+            전송되지 않습니다. 화자 10명.
+          </Text>
+          {modelState === 'none' && (
+            <Text style={{ color: p.primary, fontSize: 12, fontWeight: '700', marginTop: 6 }}>
+              ⬇ 눌러서 음성 데이터 받기 ({SHERPA_MODEL_MB}MB · 와이파이 권장 · 받는 동안 앱을 열어두세요)
+            </Text>
+          )}
+          {modelState === 'downloading' && (
+            <View style={{ marginTop: 8 }}>
+              <View style={[styles.dlBar, { backgroundColor: p.border }]}>
+                <View
+                  style={[styles.dlFill, { backgroundColor: p.primary, width: `${dlPercent}%` }]}
+                />
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 }}>
+                <Text style={{ color: p.subtext, fontSize: 12 }}>
+                  {dlPhase === 'extracting' ? '설치 중' : '다운로드 중'} {dlPercent}%
+                </Text>
+                <TouchableOpacity
+                  onPress={cancelModelDownload}
+                  hitSlop={10}
+                  accessibilityRole="button"
+                  accessibilityLabel="다운로드 취소"
+                >
+                  <Text style={{ color: p.subtext, fontSize: 12, fontWeight: '700' }}>취소</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+          {dlError && (
+            <Text style={{ color: '#e05555', fontSize: 12, marginTop: 6 }}>{dlError}</Text>
+          )}
+          {modelState === 'ready' && (
+            <TouchableOpacity
+              onPress={confirmDeleteModel}
+              hitSlop={8}
+              style={{ marginTop: 6, alignSelf: 'flex-start' }}
+              accessibilityRole="button"
+              accessibilityLabel="오프라인 음성 데이터 삭제"
+            >
+              <Text style={{ color: p.subtext, fontSize: 12, textDecorationLine: 'underline' }}>
+                음성 데이터 삭제
+              </Text>
+            </TouchableOpacity>
+          )}
+        </TouchableOpacity>
       </View>
 
       <Text style={[styles.section, { color: p.subtext }]}>재생</Text>
@@ -236,7 +408,9 @@ export default function SettingsScreen() {
         최대 {rateMax}×까지 지원. 배속해도 음높이는 그대로 유지돼 또렷합니다.
         {isEdge
           ? ' 고품질 온라인(Edge)은 약 6×까지 반영되고, 그 이상은 기본 음성에서 더 빨라집니다.'
-          : ' 아주 빠른 속도의 또렷함은 기기 음성 품질을 따릅니다(기기 엔진에 따라 4~5× 부근에서 상한일 수 있음).'}
+          : isSherpa
+            ? ' 고품질 오프라인은 약 4×까지 반영됩니다.'
+            : ' 아주 빠른 속도의 또렷함은 기기 음성 품질을 따릅니다(기기 엔진에 따라 4~5× 부근에서 상한일 수 있음).'}
       </Text>
       <Row
         label="음높이"
@@ -261,7 +435,12 @@ export default function SettingsScreen() {
       </TouchableOpacity>
       {previewFail && (
         <Text style={{ color: p.subtext, fontSize: 12, marginTop: 6, textAlign: 'center' }}>
-          미리듣기에 실패했습니다 — {isEdge ? '인터넷 연결을 확인해주세요.' : '기기 TTS 설정을 확인해주세요.'}
+          미리듣기에 실패했습니다 —{' '}
+          {isEdge
+            ? '인터넷 연결을 확인해주세요.'
+            : isSherpa
+              ? '오프라인 음성 데이터 설치 상태를 확인해주세요.'
+              : '기기 TTS 설정을 확인해주세요.'}
         </Text>
       )}
 
@@ -286,7 +465,7 @@ export default function SettingsScreen() {
           </TouchableOpacity>
           {langVoices.map((v) => {
             const active = selectedVoiceId === v.id;
-            const hq = isEdge || isHiQuality(v.quality);
+            const hq = isEdge || isSherpa || isHiQuality(v.quality);
             // 중첩 Touchable 회피: 바깥은 View, 선택/미리듣기를 별도 Touchable로 분리.
             return (
               <View
@@ -373,5 +552,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   hqBadge: { borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  dlBar: { height: 6, borderRadius: 3, overflow: 'hidden' },
+  dlFill: { height: '100%', borderRadius: 3 },
   version: { textAlign: 'center', marginTop: 32, fontSize: 12 },
 });

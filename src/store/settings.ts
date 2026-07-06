@@ -11,8 +11,9 @@ export type SettingsState = {
   rate: number;         // 재생 속도 (0.5 .. 10.0). Android setSpeechRate는 피치 보존.
   pitch: number;        // 음높이 (0.5 .. 2.0). 1.0 유지가 배속 시 가장 또렷.
   language: string;     // BCP-47
-  voiceId?: string;     // 시스템 엔진 선택 음성(엔진 식별자)
-  edgeVoiceId?: string; // Edge 엔진 선택 음성(예: ko-KR-SunHiNeural). 엔진마다 식별자 체계가 달라 분리.
+  voiceId?: string;       // 시스템 엔진 선택 음성(엔진 식별자)
+  edgeVoiceId?: string;   // Edge 엔진 선택 음성(예: ko-KR-SunHiNeural). 엔진마다 식별자 체계가 달라 분리.
+  sherpaVoiceId?: string; // sherpa(오프라인 신경망) 화자 sid('0'~'9')
   fontScale: number;    // 자막 글자 배율 (0.8 .. 1.8)
   set: (patch: Partial<SettingsState>) => void;
 };
@@ -28,6 +29,7 @@ export const useSettings = create<SettingsState>()(
       language: 'ko-KR',
       voiceId: undefined,
       edgeVoiceId: undefined,
+      sherpaVoiceId: undefined,
       fontScale: 1.0,
       // 스토어 레벨 방어 클램프 — 어떤 호출부에서도 범위를 벗어난 값이 엔진까지 흐르지 않게.
       set: (patch) => {
@@ -48,6 +50,7 @@ export const useSettings = create<SettingsState>()(
         language: s.language,
         voiceId: s.voiceId,
         edgeVoiceId: s.edgeVoiceId,
+        sherpaVoiceId: s.sherpaVoiceId,
         fontScale: s.fontScale,
       }),
     },

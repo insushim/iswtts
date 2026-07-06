@@ -1,7 +1,7 @@
 export type DocFormat = 'txt' | 'pdf' | 'epub' | 'html' | 'md';
 
 // TTS 엔진 식별자 — settings/tts 레지스트리 공용(중복 선언 방지의 단일 정본).
-export type EngineId = 'system' | 'edge';
+export type EngineId = 'system' | 'edge' | 'sherpa';
 
 export type Doc = {
   id: string;
