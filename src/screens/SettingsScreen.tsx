@@ -322,20 +322,21 @@ export default function SettingsScreen() {
             ※ 이 엔진 사용 시 읽는 문장이 음성 생성을 위해 Microsoft 서버로 전송됩니다.
           </Text>
         </TouchableOpacity>
-        {isEdge && (
+        {(isEdge || isSherpa) && (
           <TouchableOpacity
-            onPress={() => s.set({ edgeHighSpeedSystemVoice: !s.edgeHighSpeedSystemVoice })}
+            onPress={() => s.set({ highSpeedSystemVoice: !s.highSpeedSystemVoice })}
             style={[styles.engine, { borderColor: p.border }]}
             accessibilityRole="switch"
-            accessibilityLabel="2배속 초과 시 기본 음성으로 전환"
-            accessibilityState={{ checked: s.edgeHighSpeedSystemVoice }}
+            accessibilityLabel="배속 한계 초과 시 기본 음성으로 전환"
+            accessibilityState={{ checked: s.highSpeedSystemVoice }}
           >
             <Text style={{ color: p.text, fontWeight: '600' }}>
-              {s.edgeHighSpeedSystemVoice ? '☑' : '☐'} 2배속 초과 시 기본 음성으로 전환
+              {s.highSpeedSystemVoice ? '☑' : '☐'} 배속 한계 초과 시 기본 음성으로 전환
             </Text>
             <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 3 }}>
-              온라인 음성의 배속은 실제로 최대 2배까지 적용됩니다(그 이상 설정해도 2배속).
-              이 옵션을 켜면 2배속 초과 설정 시 기기 기본 음성으로 바꿔 실제 속도를 냅니다.
+              고품질 음성의 배속 한계는 온라인 2배·오프라인 3배입니다(그 이상 설정해도
+              한계 속도로 재생). 이 옵션을 켜면 한계 초과 설정 시 기기 기본 음성으로 바꿔
+              실제 속도를 냅니다.
             </Text>
           </TouchableOpacity>
         )}

@@ -52,5 +52,14 @@
     "testMatch": [
       "**/__tests__/**/*.test.ts"
     ]
+  },
+  "expo": {
+    "autolinking": {
+      "android": {
+        "buildFromSource": [
+          "expo-audio"
+        ]
+      }
+    }
   }
 }

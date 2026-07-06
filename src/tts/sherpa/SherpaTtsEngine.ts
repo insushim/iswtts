@@ -4,17 +4,17 @@ import { createTTS, saveAudioToFile } from 'react-native-sherpa-onnx/tts';
 import type { TtsEngine as NativeTts } from 'react-native-sherpa-onnx/tts';
 import type { TtsEngine, SpeakParams, SpeakHandlers, EngineVoice } from '../TtsEngine';
 import { sherpaModelPath } from '../../lib/sherpaModel';
+import { sherpaModelSpeed, sherpaPlaybackRate } from './rate';
 
 type Boundary = { ms: number; charIndex: number; charLen: number };
 type Synth = { uri: string; boundaries: Boundary[] };
 type SynthState = { cancelled: boolean; uri: string | null };
 type CacheEntry = { promise: Promise<Synth>; cancel: () => void };
 
-// 배속은 전부 모델(supertonic) 자체 speed 로 처리한다(재생속도 setPlaybackRate 미사용).
-// 실측(2026-07-06): ①모델 speed ≥4.0 은 전 구간 무음(peak 0.0) — 3.0 을 하드 상한으로.
-// ②setPlaybackRate 로 배속을 보완하면 기기에 따라 무음/글리치(사용자 실기기 보고) → 폐기.
-// 이 모델은 속도를 자체 지원하고 피치도 보존하므로 재생속도를 얹을 필요가 없다.
-const MODEL_SPEED_MAX = 3.0;
+// 배속: 모델 speed 는 저속(≤1×)에만, 1× 초과는 전부 재생속도(피치보정) — 근거·CER 실측은 rate.ts.
+// (v1.6.2 의 "전부 모델 speed" 방침은 Whisper CER 실측으로 폐기: 모델 2.0=CER72%, 3.0=82%
+//  — "2배속부터 씹힘"의 근본원인. 재생속도 2.0=CER10% 로 온전. 과거 "setPlaybackRate 기기별
+//  무음" 보고는 당시 모델 speed≥4 무음과 뒤섞인 미확정 귀속 — 재발 시 이 줄에 실측 기록할 것.)
 const MAX_CACHE = 2;
 // 합성 1건 상한(첫 호출의 모델 로드 포함). 네이티브 hang 시 직렬화 체인 전체가 영구
 // 대기하는 것을 막는다 — 초과 시 이 건만 실패시키고(폴백 유도) 체인은 계속 흐른다.
@@ -169,16 +169,11 @@ export class SherpaTtsEngine implements TtsEngine {
     return this.initPromise;
   }
 
-  // ── 배속 매핑(전부 모델 speed, 0.5~3.0 클램프) ────
-  private modelSpeed(rate?: number): number {
-    const r = Number.isFinite(rate as number) ? (rate as number) : 1.0;
-    return Math.min(MODEL_SPEED_MAX, Math.max(0.5, r));
-  }
-
   // ── 캐시/합성 ─────────────────────────────────────────
+  // 캐시 키는 합성 파라미터만(재생속도는 재생 시 적용) — 1× 초과 배속끼리는 같은 합성을 재사용.
   private keyOf(text: string, params: SpeakParams): string {
     const sid = params.voiceId || '0';
-    return `${sid}\u0000${this.modelSpeed(params.rate)}\u0000${langOf(params.language)}\u0000${text}`;
+    return `${sid}\u0000${sherpaModelSpeed(params.rate)}\u0000${langOf(params.language)}\u0000${text}`;
   }
 
   private makeSynth(text: string, params: SpeakParams): CacheEntry {
@@ -269,7 +264,7 @@ export class SherpaTtsEngine implements TtsEngine {
 
     const audio = await native.generateSpeechWithTimestamps(text, {
       sid: Number.parseInt(params.voiceId || '0', 10) || 0,
-      speed: this.modelSpeed(params.rate),
+      speed: sherpaModelSpeed(params.rate),
       // extra.lang 은 patches/react-native-sherpa-onnx+0.4.3.patch 로 네이티브까지 배선됨
       // (원본은 이 값을 버려 Supertonic 이 한국어를 영어 발음으로 읽었다 — 실측 2026-07-06).
       extra: { lang: langOf(params.language) },
@@ -301,9 +296,11 @@ export class SherpaTtsEngine implements TtsEngine {
 
       const player = createAudioPlayer(synth.uri);
       this.player = player;
-      // 배속은 합성 단계(모델 speed)에서 이미 반영됨 — setPlaybackRate 는 쓰지 않는다
-      // (일부 기기에서 무음/글리치 유발 실측). 파일을 1.0 배속 그대로 재생.
-
+      // 1× 초과 배속은 여기(피치보정 재생속도)가 담당 — 합성은 자연속도(rate.ts 근거).
+      // 3.0 까지 허용은 patches/expo-audio(coerceIn 상한 해제) 필요.
+      try { (player as any).shouldCorrectPitch = true; } catch { /* noop */ }
+      const pr = sherpaPlaybackRate(params.rate);
+      if (pr !== 1) { try { player.setPlaybackRate(pr); } catch { /* noop */ } }
       this.statusSub = player.addListener('playbackStatusUpdate', (st: any) => {
         if (myGen !== this.playGen || this.player !== player) return;
         if (st?.error) { this.teardownPlayback(); handlers.onError?.(new Error('오프라인 음성 재생 오류')); return; }
