@@ -1,5 +1,5 @@
 import { edgeSsmlMult, edgeSsmlRatePct, edgePlaybackRate } from '../tts/edge/rate';
-import { resolveEdgeVoice, EDGE_VOICES } from '../tts/edge/voices';
+import { resolveEdgeVoice, contrastEdgeVoice, EDGE_VOICES } from '../tts/edge/voices';
 
 describe('edge 배속(≤2× 순수 SSML, 초과분 스트레치 — 상한 없음)', () => {
   test('1× — 중립', () => {
@@ -59,6 +59,30 @@ describe('가상 음성(pitch 변조) 해석', () => {
     const baseIds = new Set(EDGE_VOICES.filter((v) => !v.id.includes('#')).map((v) => v.id));
     for (const v of EDGE_VOICES.filter((v) => v.id.includes('#'))) {
       expect(baseIds.has(resolveEdgeVoice(v.id).voice)).toBe(true);
+    }
+  });
+});
+
+describe('대사 자동 대비 음성', () => {
+  test('기본 음성과 다른 같은 언어 원본 음성을 고른다(여↔남 대비)', () => {
+    expect(contrastEdgeVoice('ko-KR-SunHiNeural', 'ko-KR')).toBe('ko-KR-InJoonNeural');
+    expect(contrastEdgeVoice('ko-KR-InJoonNeural', 'ko-KR')).toBe('ko-KR-SunHiNeural');
+    expect(contrastEdgeVoice('ko-KR-HyunsuMultilingualNeural', 'ko-KR')).toBe('ko-KR-SunHiNeural');
+    // 가상 음성 기반도 원본 루트 기준으로 대비
+    expect(contrastEdgeVoice('ko-KR-SunHiNeural#girl', 'ko-KR')).toBe('ko-KR-InJoonNeural');
+    // 미지정 → 언어 기본 음성 기준
+    expect(contrastEdgeVoice(undefined, 'ko-KR')).toBe('ko-KR-InJoonNeural');
+    // 대비 후보는 항상 원본(비가상) 음성
+    expect(contrastEdgeVoice('en-US-EmmaMultilingualNeural', 'en-US')).not.toContain('#');
+  });
+
+  test('회귀 가드: 모든 언어에 원본 음성 2개 이상(대비 음성이 항상 존재해야 자동 선택이 동작)', () => {
+    const byLang = new Map<string, number>();
+    for (const v of EDGE_VOICES.filter((v) => !v.id.includes('#'))) {
+      byLang.set(v.language, (byLang.get(v.language) || 0) + 1);
+    }
+    for (const [lang, n] of byLang) {
+      expect({ lang, n: Math.min(n, 2) }).toEqual({ lang, n: 2 });
     }
   });
 });

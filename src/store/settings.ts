@@ -18,6 +18,11 @@ export type SettingsState = {
   // 시스템 TTS로 전환해 "진짜" 그 속도를 낼지. 기본 false = 선택한 음성 유지(속도는 상한 클램프).
   // (v1.8.0 edgeHighSpeedFallback(기본 true)은 사용자 청감 반박으로 폐기 — 키 교체로 무효화.)
   highSpeedSystemVoice: boolean;
+  // 대사(따옴표 발화)를 다른 목소리로 낭독(멀티보이스). 대사 음성 미지정 시 자동 대비 음성.
+  dialogueVoice: boolean;
+  dialogueVoiceId?: string;       // 시스템 엔진 대사 음성(미지정 = 같은 음성 + 피치 대비)
+  edgeDialogueVoiceId?: string;   // Edge 대사 음성(미지정 = 자동 대비: 여↔남)
+  sherpaDialogueVoiceId?: string; // sherpa 대사 화자 sid(미지정 = 기본 화자 + 1)
   fontScale: number;    // 자막 글자 배율 (0.8 .. 1.8)
   set: (patch: Partial<SettingsState>) => void;
 };
@@ -35,6 +40,10 @@ export const useSettings = create<SettingsState>()(
       edgeVoiceId: undefined,
       sherpaVoiceId: undefined,
       highSpeedSystemVoice: false,
+      dialogueVoice: false,
+      dialogueVoiceId: undefined,
+      edgeDialogueVoiceId: undefined,
+      sherpaDialogueVoiceId: undefined,
       fontScale: 1.0,
       // 스토어 레벨 방어 클램프 — 어떤 호출부에서도 범위를 벗어난 값이 엔진까지 흐르지 않게.
       set: (patch) => {
@@ -57,6 +66,10 @@ export const useSettings = create<SettingsState>()(
         edgeVoiceId: s.edgeVoiceId,
         sherpaVoiceId: s.sherpaVoiceId,
         highSpeedSystemVoice: s.highSpeedSystemVoice,
+        dialogueVoice: s.dialogueVoice,
+        dialogueVoiceId: s.dialogueVoiceId,
+        edgeDialogueVoiceId: s.edgeDialogueVoiceId,
+        sherpaDialogueVoiceId: s.sherpaDialogueVoiceId,
         fontScale: s.fontScale,
       }),
     },

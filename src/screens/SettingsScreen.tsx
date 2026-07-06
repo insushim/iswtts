@@ -179,6 +179,20 @@ export default function SettingsScreen() {
   const selectedVoiceId = isSherpa ? s.sherpaVoiceId : isEdge ? s.edgeVoiceId : s.voiceId;
   const selectVoice = (id?: string) =>
     s.set(isSherpa ? { sherpaVoiceId: id } : isEdge ? { edgeVoiceId: id } : { voiceId: id });
+  // 대사 음성(멀티보이스) — 엔진별 별도 키. 미지정(undefined) = 자동 대비 음성.
+  const selectedDialogueVoiceId = isSherpa
+    ? s.sherpaDialogueVoiceId
+    : isEdge
+      ? s.edgeDialogueVoiceId
+      : s.dialogueVoiceId;
+  const selectDialogueVoice = (id?: string) =>
+    s.set(
+      isSherpa
+        ? { sherpaDialogueVoiceId: id }
+        : isEdge
+          ? { edgeDialogueVoiceId: id }
+          : { dialogueVoiceId: id },
+    );
 
   const sampleText = () =>
     s.language.startsWith('ko')
@@ -425,12 +439,12 @@ export default function SettingsScreen() {
         onInc={() => s.set({ rate: clamp(s.rate + 0.5, 0.5, rateMax) })}
       />
       <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 2 }}>
-        최대 {rateMax}×까지 지원. 배속해도 음높이는 그대로 유지돼 또렷합니다.
+        최대 {rateMax}×까지, 설정한 배속이 그대로 적용됩니다. 배속해도 음높이는 유지돼요.
         {isEdge
-          ? ' 고품질 온라인(Edge)은 약 6×까지 반영되고, 그 이상은 기본 음성에서 더 빨라집니다.'
+          ? ' 고품질 온라인(Edge)은 2×까지 원음 그대로이고, 그 이상은 소리가 점점 거칠어질 수 있습니다.'
           : isSherpa
-            ? ' 고품질 오프라인은 약 3×까지 반영됩니다(그 이상 빠르게는 지원하지 않아요).'
-            : ' 아주 빠른 속도의 또렷함은 기기 음성 품질을 따릅니다(기기 엔진에 따라 4~5× 부근에서 상한일 수 있음).'}
+            ? ' 고품질 오프라인은 3×까지 원음 그대로이고, 그 이상은 소리가 점점 거칠어질 수 있습니다.'
+            : ' 아주 빠른 속도의 또렷함은 기기 음성 품질을 따릅니다.'}
       </Text>
       <Row
         label="음높이"
@@ -521,6 +535,68 @@ export default function SettingsScreen() {
                   style={[styles.voicePlay, { borderColor: p.border }]}
                   accessibilityRole="button"
                   accessibilityLabel={`음성 ${v.name} 미리듣기`}
+                >
+                  <Text style={{ color: p.primary, fontSize: 15 }}>▶</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })}
+        </View>
+      )}
+
+      <Text style={[styles.section, { color: p.subtext }]}>대사 음성</Text>
+      <TouchableOpacity
+        onPress={() => s.set({ dialogueVoice: !s.dialogueVoice })}
+        style={{ paddingVertical: 8 }}
+        accessibilityRole="switch"
+        accessibilityLabel="대사는 다른 목소리로 낭독"
+        accessibilityState={{ checked: s.dialogueVoice }}
+      >
+        <Text style={{ color: p.text, fontWeight: '600', fontSize: 15 }}>
+          {s.dialogueVoice ? '☑' : '☐'} 대사는 다른 목소리로
+        </Text>
+        <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 4 }}>
+          따옴표(“…”) 안의 대사를 다른 목소리로 읽어 대화 장면이 생동감 있게 들립니다. 대사
+          목소리를 직접 고르거나, 자동으로 어울리는 대비 음성을 쓸 수 있어요.
+        </Text>
+      </TouchableOpacity>
+      {s.dialogueVoice && (
+        <View style={{ gap: 8, marginTop: 4 }}>
+          <TouchableOpacity
+            onPress={() => selectDialogueVoice(undefined)}
+            style={[styles.voice, { borderColor: !selectedDialogueVoiceId ? p.primary : p.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="대사 음성 자동 선택"
+            accessibilityState={{ selected: !selectedDialogueVoiceId }}
+          >
+            <Text style={{ color: p.text, fontWeight: '600' }}>자동 (어울리는 대비 음성)</Text>
+          </TouchableOpacity>
+          {langVoices.map((v) => {
+            const active = selectedDialogueVoiceId === v.id;
+            return (
+              <View
+                key={`dlg-${v.id}`}
+                style={[styles.voiceRow, { borderColor: active ? p.primary : p.border }]}
+              >
+                <TouchableOpacity
+                  style={{ flex: 1 }}
+                  onPress={() => selectDialogueVoice(v.id)}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={`대사 음성 ${v.name} 선택`}
+                  accessibilityState={{ selected: active }}
+                >
+                  <Text style={{ color: p.text, fontWeight: active ? '800' : '500' }} numberOfLines={1}>
+                    {v.name}
+                  </Text>
+                  <Text style={{ color: p.subtext, fontSize: 11 }}>{v.language}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => preview(v.id)}
+                  hitSlop={10}
+                  style={[styles.voicePlay, { borderColor: p.border }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`대사 음성 ${v.name} 미리듣기`}
                 >
                   <Text style={{ color: p.primary, fontSize: 15 }}>▶</Text>
                 </TouchableOpacity>

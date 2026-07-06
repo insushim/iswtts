@@ -60,3 +60,14 @@ export function defaultEdgeVoice(language?: string): string {
   const match = EDGE_VOICES.find((v) => v.language.toLowerCase().startsWith(prefix));
   return match ? match.id : 'ko-KR-SunHiNeural';
 }
+
+// 대사 음성 자동 선택: 같은 언어의 원본(비가상) 음성 중 기본 음성과 다른 첫 번째 —
+// 목록이 여/남 교차 배치라 자연스럽게 성별 대비가 난다(선희→인준, 인준/현수→선희).
+export function contrastEdgeVoice(baseId?: string, language?: string): string {
+  const base = (baseId || defaultEdgeVoice(language)).split('#')[0];
+  const prefix = (language || 'ko-KR').toLowerCase().split('-')[0];
+  const cand = EDGE_VOICES.find(
+    (v) => !v.id.includes('#') && v.language.toLowerCase().startsWith(prefix) && v.id !== base,
+  );
+  return cand ? cand.id : base;
+}

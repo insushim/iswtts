@@ -3,6 +3,8 @@ import type { TtsEngine } from '../tts/TtsEngine';
 import { getEngine, systemEngine } from '../tts';
 import { EDGE_MAX_RATE } from '../tts/edge/rate';
 import { SHERPA_QUALITY_MAX } from '../tts/sherpa/rate';
+import { contrastEdgeVoice } from '../tts/edge/voices';
+import { splitDialogue, type DialogueSegment } from '../lib/dialogue';
 import { useSettings } from './settings';
 import { useLibrary } from './library';
 import {
@@ -75,9 +77,11 @@ export type PlayerState = {
 };
 
 // 엔진마다 음성 식별자 체계가 다르다 → "실제 발화할 엔진"(자동 전환 반영) 기준으로 voiceId 전달.
-function speakParams(engineId: string) {
+// dialogue=true 면 대사 음성으로 교체(멀티보이스): 사용자가 고른 대사 음성 우선, 미지정 시
+// 자동 대비(Edge=여↔남, sherpa=기본 화자+1, 시스템=같은 음성+피치 대비).
+function speakParams(engineId: string, dialogue = false) {
   const s = useSettings.getState();
-  return {
+  const base = {
     rate: s.rate,
     pitch: s.pitch,
     language: s.language,
@@ -86,6 +90,32 @@ function speakParams(engineId: string) {
       : engineId === 'sherpa' ? s.sherpaVoiceId
       : s.voiceId,
   };
+  if (!dialogue) return base;
+  if (engineId === 'edge') {
+    return { ...base, voiceId: s.edgeDialogueVoiceId || contrastEdgeVoice(base.voiceId, s.language) };
+  }
+  if (engineId === 'sherpa') {
+    // sid 는 0~9 만 유효 — 저장소 손상/구버전 값은 자동 대비로 폴백.
+    if (s.sherpaDialogueVoiceId && /^[0-9]$/.test(s.sherpaDialogueVoiceId)) {
+      return { ...base, voiceId: s.sherpaDialogueVoiceId };
+    }
+    const parsed = Number.parseInt(base.voiceId || '0', 10);
+    const baseSid = Number.isInteger(parsed) && parsed >= 0 && parsed <= 9 ? parsed : 0;
+    return { ...base, voiceId: String((baseSid + 1) % 10) };
+  }
+  if (s.dialogueVoiceId) return { ...base, voiceId: s.dialogueVoiceId };
+  return { ...base, pitch: Math.min(2, base.pitch * 1.25) };
+}
+
+// 대사 세그먼트는 문서 단위로 1회 계산(문장 경계를 넘는 따옴표 추적) — 배열 참조로 메모.
+let segCacheSrc: string[] | null = null;
+let segCache: DialogueSegment[][] = [];
+function segsOf(sentences: string[]): DialogueSegment[][] {
+  if (segCacheSrc !== sentences) {
+    segCacheSrc = sentences;
+    segCache = splitDialogue(sentences);
+  }
+  return segCache;
 }
 
 // Edge 2× 초과 자동 전환 안내는 앱 실행당 1회만(문장마다 배너가 뜨면 소음).
@@ -126,64 +156,94 @@ export const usePlayer = create<PlayerState>((set, get) => {
     // 진행률 저장
     if (docId) useLibrary.getState().setProgress(docId, index, sentences.length);
 
-    const handlers = {
-      onBoundary: (charIndex: number, charLength: number) => {
-        if (myEpoch !== epoch) return;
-        set({ wordStart: charIndex, wordLen: charLength });
-      },
-      onDone: () => {
-        if (myEpoch !== epoch) return;
-        // 비-시스템 엔진이 문장을 무사히 끝냈으면 연속 실패 카운터 리셋.
-        if (activeEngine.id !== 'system') engineFails[activeEngine.id] = 0;
-        const st = get();
-        if (st.index < st.sentences.length - 1) {
-          set({ index: st.index + 1 });
-          speakCurrent();
-        } else {
-          set({ playing: false, wordStart: 0, wordLen: 0 });
-          pauseMediaSession(); // 책 끝 — 알림은 남겨 ▶ 로 재청취 가능
-        }
-      },
+    // 문장 → 발화 세그먼트(대사 멀티보이스가 켜져 있으면 지문/대사 분리, 꺼져 있으면 문장 통째).
+    const sentence = sentences[index];
+    const allSegs = settings.dialogueVoice ? segsOf(sentences) : null;
+    const segs: DialogueSegment[] =
+      allSegs?.[index] ?? [{ text: sentence, start: 0, dialogue: false }];
+
+    // 이 문장에서 시스템 폴백이 발생하면 남은 세그먼트도 시스템으로(실패 엔진 재시도 소음 방지).
+    let fellBack = false;
+
+    const advanceSentence = () => {
+      // 폴백 없이 문장을 완주했을 때만 연속 실패 카운터 리셋(문장 단위 의미 유지).
+      // 세그먼트 성공마다 리셋하면 "지문 성공 + 대사 실패" 문장에서 카운터가 매번 0으로
+      // 돌아가 서킷브레이커가 영원히 안 열린다 — 교차검증 발견 2026-07-06.
+      if (!fellBack && engineId !== 'system') engineFails[engineId] = 0;
+      const st = get();
+      if (st.index < st.sentences.length - 1) {
+        set({ index: st.index + 1 });
+        speakCurrent();
+      } else {
+        set({ playing: false, wordStart: 0, wordLen: 0 });
+        pauseMediaSession(); // 책 끝 — 알림은 남겨 ▶ 로 재청취 가능
+      }
     };
 
-    const sentence = sentences[index];
-    engine.speak(sentence, speakParams(engineId), {
-      ...handlers,
-      onError: () => {
-        if (myEpoch !== epoch) return;
-        // 비-시스템 엔진(Edge/sherpa) 실패 시 → 같은 문장을 시스템 TTS로 폴백해 낭독이 끊기지 않게.
-        if (engineId !== 'system') {
-          // 연속 실패 집계 — 한도 도달 시 잠시 해당 엔진을 차단하고 사용자에게 1회 알림.
-          if (reportEngineFailure(engineId)) {
-            set({
-              notice:
-                engineId === 'edge'
-                  ? '온라인 음성 연결이 불안정해 잠시 기본 음성으로 낭독합니다.'
-                  : '오프라인 고품질 음성 재생에 문제가 있어 잠시 기본 음성으로 낭독합니다.',
+    const speakSegment = (si: number) => {
+      const seg = segs[si];
+      const engId = fellBack ? 'system' : engineId;
+      const eng = fellBack ? systemEngine : engine;
+      const handlers = {
+        // 세그먼트 내 오프셋 → 문장 내 오프셋(하이라이트는 문장 기준).
+        onBoundary: (charIndex: number, charLength: number) => {
+          if (myEpoch !== epoch) return;
+          set({ wordStart: seg.start + charIndex, wordLen: charLength });
+        },
+        onDone: () => {
+          if (myEpoch !== epoch) return;
+          if (si < segs.length - 1) speakSegment(si + 1);
+          else advanceSentence();
+        },
+      };
+      eng.speak(seg.text, speakParams(engId, seg.dialogue), {
+        ...handlers,
+        onError: () => {
+          if (myEpoch !== epoch) return;
+          // 비-시스템 엔진(Edge/sherpa) 실패 시 → 같은 세그먼트를 시스템 TTS로 폴백해 낭독이 끊기지 않게.
+          if (engId !== 'system') {
+            // 연속 실패 집계 — 한도 도달 시 잠시 해당 엔진을 차단하고 사용자에게 1회 알림.
+            if (reportEngineFailure(engId)) {
+              set({
+                notice:
+                  engId === 'edge'
+                    ? '온라인 음성 연결이 불안정해 잠시 기본 음성으로 낭독합니다.'
+                    : '오프라인 고품질 음성 재생에 문제가 있어 잠시 기본 음성으로 낭독합니다.',
+              });
+            }
+            eng.stop(); // 잔여 재생·prefetch 캐시(mp3/wav) 정리(폴백 후 누수 방지)
+            activeEngine = systemEngine;
+            fellBack = true;
+            systemEngine.speak(seg.text, speakParams('system', seg.dialogue), {
+              ...handlers,
+              onError: () => {
+                if (myEpoch !== epoch) return;
+                set({ playing: false, notice: '재생에 실패했습니다 — 기기 TTS 설정을 확인해주세요.' });
+                pauseMediaSession();
+              },
             });
+            return;
           }
-          engine.stop(); // 잔여 재생·prefetch 캐시(mp3/wav) 정리(폴백 후 누수 방지)
-          activeEngine = systemEngine;
-          systemEngine.speak(sentence, speakParams('system'), {
-            ...handlers,
-            onError: () => {
-              if (myEpoch !== epoch) return;
-              set({ playing: false, notice: '재생에 실패했습니다 — 기기 TTS 설정을 확인해주세요.' });
-              pauseMediaSession();
-            },
-          });
-          return;
-        }
-        set({ playing: false, notice: '재생에 실패했습니다 — 기기 TTS 설정을 확인해주세요.' });
-        pauseMediaSession();
-      },
-    });
+          set({ playing: false, notice: '재생에 실패했습니다 — 기기 TTS 설정을 확인해주세요.' });
+          pauseMediaSession();
+        },
+      });
 
-    // 다음 문장을 미리 합성(온라인 엔진의 문장 간 딜레이 제거). 시스템 엔진은 prefetch 미구현 → no-op.
-    const nextIdx = index + 1;
-    if (nextIdx < sentences.length) {
-      engine.prefetch?.(sentences[nextIdx], speakParams(engineId));
-    }
+      // 다음 발화 단위를 미리 합성(문장 간·세그먼트 간 딜레이 제거). 시스템 엔진은 no-op.
+      if (!fellBack) {
+        if (si < segs.length - 1) {
+          const nseg = segs[si + 1];
+          engine.prefetch?.(nseg.text, speakParams(engineId, nseg.dialogue));
+        } else {
+          const nextIdx = index + 1;
+          if (nextIdx < sentences.length) {
+            const nseg = allSegs?.[nextIdx]?.[0] ?? { text: sentences[nextIdx], start: 0, dialogue: false };
+            engine.prefetch?.(nseg.text, speakParams(engineId, nseg.dialogue));
+          }
+        }
+      }
+    };
+    speakSegment(0);
   };
 
   return {
@@ -268,6 +328,9 @@ export const usePlayer = create<PlayerState>((set, get) => {
       epoch++;
       activeEngine.stop();
       stopMediaSession(); // 잠금화면 알림까지 제거
+      // 대사 세그먼트 캐시 정리(닫은 문서의 문장 배열을 붙들지 않게).
+      segCacheSrc = null;
+      segCache = [];
       set({
         docId: null,
         title: '',
