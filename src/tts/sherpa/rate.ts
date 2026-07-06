@@ -8,6 +8,9 @@
 //   (3.6×: 조합38% vs 순수62% / 4.0×: 조합48% vs 순수76%).
 // → 분담: 스트레치가 3.0까지 우선 → 초과분은 모델(무음 경계 3.0 클램프) → 9× 초과 잔여는
 //   다시 스트레치(하드맥스 10, expo-audio 패치 상한과 일치).
+// + 스마트 스피드(v1.11.0): >3×에서는 합성 오디오의 긴 쉼을 먼저 압축(smartSpeed.ts,
+//   왜곡 0 배속 f≈1.1~1.3)하고, 그만큼 스트레치를 덜어낸다(실효 스트레치 = 3/f).
+//   ≤3×는 미적용 — 사용자가 청감 확정한 소리를 바꾸지 않는다.
 
 export const SHERPA_QUALITY_MAX = 3.2; // 품질 무손상 임계(시스템 음성 전환 옵션의 기준점)
 const SONIC_FIRST_MAX = 3.0; // 스트레치 단독 온전 상한
@@ -23,9 +26,19 @@ export function sherpaModelSpeed(rate?: number): number {
   return Math.min(MODEL_MAX, r / SONIC_FIRST_MAX);
 }
 
-// 재생속도가 분담할 배수(전체 ÷ 모델 몫).
-export function sherpaPlaybackRate(rate?: number): number {
+// 스마트 스피드(무음 압축) 적용 여부 — 스트레치 온전 구간(≤3×)의 확정된 소리는 건드리지
+// 않고, 스트레치가 한계(3.0)에 붙는 초고배속에서만 쉼을 압축해 부담을 덜어낸다.
+export function sherpaTrimEnabled(rate?: number): boolean {
+  return Number.isFinite(rate as number) && (rate as number) > SONIC_FIRST_MAX;
+}
+
+// 재생속도가 분담할 배수(전체 ÷ 모델 몫 ÷ 무음압축 몫). trimFactor = 압축으로 이미 번
+// 배속(원본길이÷압축길이, 미압축=1). 곱 불변식: 모델 × trimFactor × 재생속도 = 설정 배속.
+export function sherpaPlaybackRate(rate?: number, trimFactor: number = 1): number {
   const r = Number.isFinite(rate as number) ? (rate as number) : 1.0;
   if (r <= 1) return 1;
-  return Math.max(1, Math.min(PLAYBACK_HARD_MAX, r / sherpaModelSpeed(r)));
+  const f = Number.isFinite(trimFactor) && trimFactor >= 1 ? trimFactor : 1;
+  // 하한 0.5: 쉼이 극단적으로 많은 문장에서 압축만으로 목표 배속을 넘어선 경우 되레 늦춰
+  // 설정 배속을 정확히 지킨다(현실적으론 f<3 이라 거의 항상 >1).
+  return Math.max(0.5, Math.min(PLAYBACK_HARD_MAX, r / (sherpaModelSpeed(r) * f)));
 }

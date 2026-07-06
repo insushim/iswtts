@@ -1,4 +1,4 @@
-import { sherpaModelSpeed, sherpaPlaybackRate } from '../tts/sherpa/rate';
+import { sherpaModelSpeed, sherpaPlaybackRate, sherpaTrimEnabled } from '../tts/sherpa/rate';
 
 describe('sherpa 배속(상한 없음 — 스트레치 3× 우선, 초과분 모델)', () => {
   test('1× — 둘 다 중립', () => {
@@ -32,5 +32,29 @@ describe('sherpa 배속(상한 없음 — 스트레치 3× 우선, 초과분 모
     expect(sherpaModelSpeed(0.7)).toBe(0.7);
     expect(sherpaModelSpeed(0.3)).toBe(0.5);
     expect(sherpaPlaybackRate(0.7)).toBe(1);
+  });
+});
+
+describe('스마트 스피드(무음 압축) 연동', () => {
+  test('적용 정책 — 스트레치 온전 구간(≤3×)은 미적용, 초고배속(>3×)만', () => {
+    for (const r of [0.5, 1, 2, 3]) expect(sherpaTrimEnabled(r)).toBe(false);
+    for (const r of [3.01, 4, 5, 10]) expect(sherpaTrimEnabled(r)).toBe(true);
+    expect(sherpaTrimEnabled(undefined)).toBe(false);
+  });
+
+  test('곱 불변식 유지 — 모델 × 압축몫 × 재생속도 = 설정 배속(압축은 스트레치에서만 차감)', () => {
+    for (const r of [3.5, 4, 5, 6, 9]) {
+      for (const f of [1, 1.15, 1.3]) {
+        expect(sherpaModelSpeed(r) * f * sherpaPlaybackRate(r, f)).toBeCloseTo(r, 5);
+      }
+    }
+    // 3<r≤9 구간에서 실효 스트레치 = 3/f (압축이 스트레치를 직접 덜어낸다)
+    expect(sherpaPlaybackRate(5, 1.25)).toBeCloseTo(3 / 1.25, 5);
+    expect(sherpaPlaybackRate(4, 1.2)).toBeCloseTo(3 / 1.2, 5);
+  });
+
+  test('비정상 trimFactor(NaN·<1)는 1로 취급 — 기존 동작과 동일', () => {
+    expect(sherpaPlaybackRate(4, NaN)).toBeCloseTo(sherpaPlaybackRate(4), 5);
+    expect(sherpaPlaybackRate(4, 0.5)).toBeCloseTo(sherpaPlaybackRate(4), 5);
   });
 });

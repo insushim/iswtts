@@ -4,10 +4,12 @@ import { createTTS, saveAudioToFile } from 'react-native-sherpa-onnx/tts';
 import type { TtsEngine as NativeTts } from 'react-native-sherpa-onnx/tts';
 import type { TtsEngine, SpeakParams, SpeakHandlers, EngineVoice } from '../TtsEngine';
 import { sherpaModelPath } from '../../lib/sherpaModel';
-import { sherpaModelSpeed, sherpaPlaybackRate } from './rate';
+import { sherpaModelSpeed, sherpaPlaybackRate, sherpaTrimEnabled } from './rate';
+import { compressSilence } from './smartSpeed';
 
 type Boundary = { ms: number; charIndex: number; charLen: number };
-type Synth = { uri: string; boundaries: Boundary[] };
+// trimFactor: 스마트 스피드(무음 압축)로 이미 번 배속(미압축=1) — 재생속도에서 이만큼 덜어낸다.
+type Synth = { uri: string; boundaries: Boundary[]; trimFactor: number };
 type SynthState = { cancelled: boolean; uri: string | null };
 type CacheEntry = { promise: Promise<Synth>; cancel: () => void };
 
@@ -273,19 +275,32 @@ export class SherpaTtsEngine implements TtsEngine {
     if (state.cancelled) throw new Error('cancelled');
     if (!audio.samples?.length) throw new Error('오프라인 음성 합성 실패(빈 오디오)');
 
+    // 스마트 스피드: 초고배속(>3×)만 긴 쉼을 압축해 스트레치 부담을 덜어낸다(smartSpeed.ts).
+    // 단어 하이라이트 타임스탬프도 같은 매핑으로 보정.
+    let samples: number[] = audio.samples;
+    let trimFactor = 1;
+    let boundaries = this.mapBoundaries(text, audio.subtitles || []);
+    if (sherpaTrimEnabled(params.rate)) {
+      const c = compressSilence(audio.samples, audio.sampleRate);
+      samples = c.samples;
+      trimFactor = c.factor;
+      boundaries = boundaries.map((b) => ({ ...b, ms: c.mapMs(b.ms) }));
+    }
+    if (state.cancelled) throw new Error('cancelled');
+
     // 네이티브 WAV 저장은 file:// 없는 절대경로, expo-audio 재생은 file:// URI.
     const dir = (cacheDirectory || '').replace(/^file:\/\//, '');
     if (!dir) throw new Error('캐시 디렉토리 없음');
     const name = `sherpa-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.wav`;
     const plainPath = `${dir}${name}`;
-    await saveAudioToFile({ samples: audio.samples, sampleRate: audio.sampleRate }, plainPath);
+    await saveAudioToFile({ samples, sampleRate: audio.sampleRate }, plainPath);
     const uri = `file://${plainPath}`;
     if (state.cancelled) {
       deleteAsync(uri, { idempotent: true }).catch(() => { /* noop */ });
       throw new Error('cancelled');
     }
     state.uri = uri;
-    return { uri, boundaries: this.mapBoundaries(text, audio.subtitles || []) };
+    return { uri, boundaries, trimFactor };
   }
 
   private playFile(synth: Synth, params: SpeakParams, handlers: SpeakHandlers, myGen: number): void {
@@ -298,8 +313,9 @@ export class SherpaTtsEngine implements TtsEngine {
       this.player = player;
       // 1× 초과 배속은 여기(피치보정 재생속도)가 담당 — 합성은 자연속도(rate.ts 근거).
       // 3.0 까지 허용은 patches/expo-audio(coerceIn 상한 해제) 필요.
+      // 무음 압축으로 이미 번 몫(trimFactor)만큼 스트레치를 덜어낸다(초고배속 또렷함 개선).
       try { (player as any).shouldCorrectPitch = true; } catch { /* noop */ }
-      const pr = sherpaPlaybackRate(params.rate);
+      const pr = sherpaPlaybackRate(params.rate, synth.trimFactor);
       if (pr !== 1) { try { player.setPlaybackRate(pr); } catch { /* noop */ } }
       this.statusSub = player.addListener('playbackStatusUpdate', (st: any) => {
         if (myGen !== this.playGen || this.player !== player) return;
