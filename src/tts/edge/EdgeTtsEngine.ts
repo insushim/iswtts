@@ -20,7 +20,8 @@ import {
   unescapeXml,
   bytesToBase64,
 } from './protocol';
-import { EDGE_VOICES, defaultEdgeVoice } from './voices';
+import { EDGE_VOICES, defaultEdgeVoice, resolveEdgeVoice } from './voices';
+import { edgeSsmlRatePct, edgePlaybackRate } from './rate';
 
 type Word = { text: string; offsetMs: number };
 type Boundary = { ms: number; charIndex: number; charLen: number };
@@ -32,9 +33,6 @@ const CONNECT_TIMEOUT_MS = 8000;
 // 연결 후 합성 전체(오디오 수신 완료까지)의 상한. 기존엔 연결 타이머가 끝까지 살아 있어
 // 8초 넘는 정상 합성(긴 문장·느린 망)도 "연결 시간 초과"로 오탐 종료됐다 → 단계별 타이머로 분리.
 const SYNTH_TIMEOUT_MS = 25000;
-// SSML 로 안전하게 지원되는 최대 배속(그 이상은 재생속도로 보완). Edge 실효 상한 ≈ 3×2 = 6×.
-const SSML_MAX_MULT = 3;
-const PLAYBACK_MAX = 2.0; // expo-audio Android 재생속도 상한
 const MAX_CACHE = 2;
 
 // Edge(Read Aloud) 온라인 신경망 엔진. 문장 하나 = WebSocket 요청 하나(오디오+단어타이밍) →
@@ -110,26 +108,13 @@ export class EdgeTtsEngine implements TtsEngine {
     return EDGE_VOICES;
   }
 
-  // ── 배속 매핑 ─────────────────────────────────────────
-  // SSML 로 ≤3×, 나머지는 재생속도(피치 보정)로. 단어 타이밍은 SSML 타임라인 기준이라
-  // 재생속도를 얹어도 currentTime(미디어 위치)과 그대로 일치한다.
-  private ssmlRatePct(rate?: number): string {
-    const raw = Number.isFinite(rate as number) ? (rate as number) : 1.0;
-    const r = Math.min(SSML_MAX_MULT, Math.max(0.5, raw));
-    const pct = Math.round((r - 1) * 100);
-    return `${pct >= 0 ? '+' : ''}${pct}%`;
-  }
-
-  private playbackRate(rate?: number): number {
-    const r = Number.isFinite(rate as number) ? (rate as number) : 1.0;
-    const ssmlMult = Math.min(SSML_MAX_MULT, Math.max(0.5, r));
-    return Math.max(0.5, Math.min(PLAYBACK_MAX, r / ssmlMult));
-  }
+  // 배속 매핑: 재생속도(피치 보정) 우선, 초과분만 SSML — 분담 로직은 rate.ts(순수 함수, 테스트 있음).
+  // 단어 타이밍은 SSML 타임라인 기준이라 재생속도를 얹어도 currentTime(미디어 위치)과 그대로 일치한다.
 
   // ── 캐시/합성 라이프사이클 ─────────────────────────────
   private keyOf(text: string, params: SpeakParams): string {
     const voice = params.voiceId || defaultEdgeVoice(params.language);
-    return `${voice}\u0000${this.ssmlRatePct(params.rate)}\u0000${params.language || 'ko-KR'}\u0000${text}`;
+    return `${voice}\u0000${edgeSsmlRatePct(params.rate)}\u0000${params.language || 'ko-KR'}\u0000${text}`;
   }
 
   private makeSynth(text: string, params: SpeakParams): CacheEntry {
@@ -184,8 +169,9 @@ export class EdgeTtsEngine implements TtsEngine {
 
   // 문장 → (오디오 파일 + 단어 경계). 로컬 ws 로 자기완결(재생과 독립, 동시 실행 가능).
   private async synthesize(text: string, params: SpeakParams, state: SynthState): Promise<Synth> {
-    const voice = params.voiceId || defaultEdgeVoice(params.language);
-    const ssml = buildSsml(text, voice, params.language || 'ko-KR', this.ssmlRatePct(params.rate));
+    const voiceId = params.voiceId || defaultEdgeVoice(params.language);
+    const { voice, pitch } = resolveEdgeVoice(voiceId); // 가상 음성(#child 등)은 기본음성+pitch 변조로 해석
+    const ssml = buildSsml(text, voice, params.language || 'ko-KR', edgeSsmlRatePct(params.rate), pitch);
     const reqId = connectId();
     const token = await generateSecMsGec();
     if (state.cancelled) throw new Error('cancelled');
@@ -300,7 +286,7 @@ export class EdgeTtsEngine implements TtsEngine {
       const player = createAudioPlayer(synth.uri);
       this.player = player;
       try { (player as any).shouldCorrectPitch = true; } catch { /* noop */ }
-      const pr = this.playbackRate(params.rate);
+      const pr = edgePlaybackRate(params.rate);
       if (pr !== 1) { try { player.setPlaybackRate(pr); } catch { /* noop */ } }
 
       this.statusSub = player.addListener('playbackStatusUpdate', (st: any) => {

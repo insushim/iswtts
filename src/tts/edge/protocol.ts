@@ -105,13 +105,14 @@ export function removeIncompatible(s: string): string {
   return out;
 }
 
-// pitch 는 신경망 음성 품질을 위해 +0Hz(기본) 고정 — 피치 조정은 시스템 엔진에서만 의미.
+// pitch 는 기본 +0Hz(원음 품질 최선) — 가상 어린이/청소년 음성만 변조값을 넘긴다(voices.ts).
 // xml:lang 은 선택 음성 언어를 따른다(비한국어 음성에서 ko-KR 고정 시 거부 방지).
 export function buildSsml(
   text: string,
   voice: string,
   language: string,
   ratePct: string,
+  pitch: string = '+0Hz',
 ): string {
   const escaped = escapeXml(removeIncompatible(text));
   const lang = escapeXml(language || 'ko-KR');
@@ -119,7 +120,7 @@ export function buildSsml(
   return (
     `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${lang}'>` +
     `<voice name='${safeVoice}'>` +
-    `<prosody pitch='+0Hz' rate='${ratePct}' volume='+0%'>` +
+    `<prosody pitch='${escapeXml(pitch)}' rate='${ratePct}' volume='+0%'>` +
     escaped +
     '</prosody></voice></speak>'
   );
