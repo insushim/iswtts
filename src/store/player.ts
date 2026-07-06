@@ -100,13 +100,13 @@ export const usePlayer = create<PlayerState>((set, get) => {
     const wantId = settings.engineId;
     let engineId =
       wantId !== 'system' && Date.now() < (engineBlockedUntil[wantId] || 0) ? 'system' : wantId;
-    // Edge 는 2× 초과를 깨끗하게 못 낸다(SSML 포화+스트레치 겹침 음절소실 — Whisper CER 실측).
-    // 기본은 시스템 TTS 자동 전환(고배속 또렷). 설정에서 끄면 Edge 음성 유지 + 실효 2× 클램프.
-    if (engineId === 'edge' && settings.rate > EDGE_MAX_RATE && settings.edgeHighSpeedFallback) {
+    // Edge 배속은 서버가 2×에서 포화(실측) — 기본은 Edge 음성 그대로(실효 2× 상한, 원래 동작).
+    // 사용자가 옵션을 켠 경우에만 2× 초과를 시스템 TTS로 전환해 "진짜" 고배속을 낸다.
+    if (engineId === 'edge' && settings.rate > EDGE_MAX_RATE && settings.edgeHighSpeedSystemVoice) {
       engineId = 'system';
       if (!highSpeedNoticeShown) {
         highSpeedNoticeShown = true;
-        set({ notice: '2배속 초과는 온라인 음성 품질이 보장되지 않아 기본 음성으로 낭독합니다. (설정에서 변경 가능)' });
+        set({ notice: '설정에 따라 2배속 초과는 기본 음성으로 낭독합니다.' });
       }
     }
     const engine = getEngine(engineId);

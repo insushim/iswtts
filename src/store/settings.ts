@@ -14,9 +14,10 @@ export type SettingsState = {
   voiceId?: string;       // 시스템 엔진 선택 음성(엔진 식별자)
   edgeVoiceId?: string;   // Edge 엔진 선택 음성(예: ko-KR-SunHiNeural). 엔진마다 식별자 체계가 달라 분리.
   sherpaVoiceId?: string; // sherpa(오프라인 신경망) 화자 sid('0'~'9')
-  // Edge 는 2× 초과 배속을 깨끗하게 못 낸다(SSML +100% 포화 + 타임스트레치 겹치면 음절 소실 — 실측).
-  // true(기본)면 2× 초과 시 시스템 TTS로 자동 전환(또렷), false 면 Edge 음성 유지 + 실효 2× 클램프.
-  edgeHighSpeedFallback: boolean;
+  // Edge 배속은 서버가 2×에서 포화(실측) — 기본은 Edge 음성 유지(실효 2× 상한, 원래부터의 동작).
+  // true 로 켜면 2× 초과 설정 시 시스템 TTS로 전환해 "진짜" 고배속을 낸다(음성은 기본 음성으로 바뀜).
+  // (v1.8.0 의 edgeHighSpeedFallback(기본 true)은 사용자 청감 반박으로 폐기 — 새 키로 교체해 무효화.)
+  edgeHighSpeedSystemVoice: boolean;
   fontScale: number;    // 자막 글자 배율 (0.8 .. 1.8)
   set: (patch: Partial<SettingsState>) => void;
 };
@@ -33,7 +34,7 @@ export const useSettings = create<SettingsState>()(
       voiceId: undefined,
       edgeVoiceId: undefined,
       sherpaVoiceId: undefined,
-      edgeHighSpeedFallback: true,
+      edgeHighSpeedSystemVoice: false,
       fontScale: 1.0,
       // 스토어 레벨 방어 클램프 — 어떤 호출부에서도 범위를 벗어난 값이 엔진까지 흐르지 않게.
       set: (patch) => {
@@ -55,7 +56,7 @@ export const useSettings = create<SettingsState>()(
         voiceId: s.voiceId,
         edgeVoiceId: s.edgeVoiceId,
         sherpaVoiceId: s.sherpaVoiceId,
-        edgeHighSpeedFallback: s.edgeHighSpeedFallback,
+        edgeHighSpeedSystemVoice: s.edgeHighSpeedSystemVoice,
         fontScale: s.fontScale,
       }),
     },

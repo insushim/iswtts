@@ -324,18 +324,18 @@ export default function SettingsScreen() {
         </TouchableOpacity>
         {isEdge && (
           <TouchableOpacity
-            onPress={() => s.set({ edgeHighSpeedFallback: !s.edgeHighSpeedFallback })}
+            onPress={() => s.set({ edgeHighSpeedSystemVoice: !s.edgeHighSpeedSystemVoice })}
             style={[styles.engine, { borderColor: p.border }]}
             accessibilityRole="switch"
-            accessibilityLabel="2배속 초과 시 기본 음성으로 자동 전환"
-            accessibilityState={{ checked: s.edgeHighSpeedFallback }}
+            accessibilityLabel="2배속 초과 시 기본 음성으로 전환"
+            accessibilityState={{ checked: s.edgeHighSpeedSystemVoice }}
           >
             <Text style={{ color: p.text, fontWeight: '600' }}>
-              {s.edgeHighSpeedFallback ? '☑' : '☐'} 2배속 초과 시 기본 음성으로 자동 전환
+              {s.edgeHighSpeedSystemVoice ? '☑' : '☐'} 2배속 초과 시 기본 음성으로 전환
             </Text>
             <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 3 }}>
-              온라인 음성은 기술적으로 2배속까지만 또렷합니다. 끄면 온라인 음성을 유지하는
-              대신 속도가 최대 2배속으로 제한됩니다.
+              온라인 음성의 배속은 실제로 최대 2배까지 적용됩니다(그 이상 설정해도 2배속).
+              이 옵션을 켜면 2배속 초과 설정 시 기기 기본 음성으로 바꿔 실제 속도를 냅니다.
             </Text>
           </TouchableOpacity>
         )}
