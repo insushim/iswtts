@@ -1,24 +1,30 @@
 import { edgeSsmlMult, edgeSsmlRatePct, edgePlaybackRate } from '../tts/edge/rate';
 import { resolveEdgeVoice, EDGE_VOICES } from '../tts/edge/voices';
 
-describe('edge 배속 분담(재생속도 우선)', () => {
+describe('edge 배속 분담(기하평균 — 양축 극단 회피)', () => {
   test('1× — 둘 다 중립', () => {
     expect(edgeSsmlRatePct(1)).toBe('+0%');
     expect(edgePlaybackRate(1)).toBe(1);
   });
 
-  test('≤2× — SSML 은 자연속도 유지, 재생속도가 전담(씹힘 방지 핵심)', () => {
-    expect(edgeSsmlRatePct(1.5)).toBe('+0%');
-    expect(edgePlaybackRate(1.5)).toBe(1.5);
-    expect(edgeSsmlRatePct(2)).toBe('+0%');
-    expect(edgePlaybackRate(2)).toBe(2);
+  test('균등 분담 — 두 축이 √rate 씩, 어느 쪽도 극단 금지(핵심 불변식)', () => {
+    for (const r of [1.2, 1.5, 2, 2.5, 3, 4]) {
+      const ssml = edgeSsmlMult(r);
+      const pb = edgePlaybackRate(r);
+      expect(ssml * pb).toBeCloseTo(r, 5); // 곱 = 요청 배속
+      expect(ssml).toBeLessThanOrEqual(2); // 씹힘 구간(+100%) 미진입 (≤4×)
+      expect(pb).toBeLessThanOrEqual(2); // Sonic 상한
+    }
+    // 2× 대표값: 합성 +41% × 재생 1.414
+    expect(edgeSsmlRatePct(2)).toBe('+41%');
+    expect(edgePlaybackRate(2)).toBeCloseTo(Math.SQRT2, 3);
+    // 3×: 1.732 × 1.732
+    expect(edgePlaybackRate(3)).toBeCloseTo(Math.sqrt(3), 3);
   });
 
-  test('2× 초과 — 초과분만 SSML 분담, 곱이 요청 배속과 일치', () => {
-    expect(edgeSsmlMult(3) * edgePlaybackRate(3)).toBeCloseTo(3);
-    expect(edgeSsmlRatePct(3)).toBe('+50%');
-    expect(edgePlaybackRate(3)).toBe(2);
-    expect(edgeSsmlMult(6) * edgePlaybackRate(6)).toBeCloseTo(6);
+  test('4× 초과 — 재생속도 2.0 고정, 초과분은 SSML 흡수', () => {
+    expect(edgePlaybackRate(5)).toBe(2);
+    expect(edgeSsmlMult(5)).toBeCloseTo(2.5, 5);
     expect(edgeSsmlRatePct(6)).toBe('+200%');
   });
 
