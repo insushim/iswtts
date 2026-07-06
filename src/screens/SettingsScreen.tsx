@@ -331,12 +331,12 @@ export default function SettingsScreen() {
             accessibilityState={{ checked: s.highSpeedSystemVoice }}
           >
             <Text style={{ color: p.text, fontWeight: '600' }}>
-              {s.highSpeedSystemVoice ? '☑' : '☐'} 배속 한계 초과 시 기본 음성으로 전환
+              {s.highSpeedSystemVoice ? '☑' : '☐'} 초고배속은 기본 음성으로 전환
             </Text>
             <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 3 }}>
-              고품질 음성의 배속 한계는 온라인 2배·오프라인 3배입니다(그 이상 설정해도
-              한계 속도로 재생). 이 옵션을 켜면 한계 초과 설정 시 기기 기본 음성으로 바꿔
-              실제 속도를 냅니다.
+              설정한 배속은 항상 그대로 적용됩니다. 다만 온라인 2배·오프라인 3배를 넘어서면
+              음질이 거칠어질 수 있는데, 이 옵션을 켜면 그 구간에서 기기 기본 음성(고배속에
+              강함)으로 자동 전환해 줍니다.
             </Text>
           </TouchableOpacity>
         )}

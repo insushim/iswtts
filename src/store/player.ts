@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { TtsEngine } from '../tts/TtsEngine';
 import { getEngine, systemEngine } from '../tts';
 import { EDGE_MAX_RATE } from '../tts/edge/rate';
-import { SHERPA_PLAYBACK_MAX } from '../tts/sherpa/rate';
+import { SHERPA_QUALITY_MAX } from '../tts/sherpa/rate';
 import { useSettings } from './settings';
 import { useLibrary } from './library';
 import {
@@ -101,11 +101,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
     const wantId = settings.engineId;
     let engineId =
       wantId !== 'system' && Date.now() < (engineBlockedUntil[wantId] || 0) ? 'system' : wantId;
-    // 고품질 엔진의 배속 실효 상한(Edge=2× 서버 포화, sherpa=3× 재생속도 — 실측) 초과 설정 시:
-    // 기본은 선택 음성 유지(엔진이 상한으로 클램프). 옵션을 켠 경우에만 시스템 TTS로 전환해
-    // "진짜" 그 속도를 낸다.
-    const engineCap = engineId === 'edge' ? EDGE_MAX_RATE : engineId === 'sherpa' ? SHERPA_PLAYBACK_MAX : Infinity;
-    if (settings.rate > engineCap && settings.highSpeedSystemVoice) {
+    // 설정 배속은 어느 엔진이든 그대로 적용된다(상한 없음 — 사용자 방침 2026-07-06).
+    // 이 옵션은 품질 무손상 임계(Edge=2×, sherpa=3.2× — CER 실측) 초과 시 더 또렷한
+    // 시스템 TTS 로 바꿔 듣고 싶은 사용자를 위한 선택지일 뿐이다.
+    const qualityMax = engineId === 'edge' ? EDGE_MAX_RATE : engineId === 'sherpa' ? SHERPA_QUALITY_MAX : Infinity;
+    if (settings.rate > qualityMax && settings.highSpeedSystemVoice) {
       engineId = 'system';
       if (!highSpeedNoticeShown) {
         highSpeedNoticeShown = true;

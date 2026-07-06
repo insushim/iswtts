@@ -23,8 +23,12 @@ export function edgeSsmlRatePct(rate?: number): string {
   return `${pct >= 0 ? '+' : ''}${pct}%`;
 }
 
-// 재생속도는 항상 1.0 — 스트레치 아티팩트(뭉개짐) 방지를 위해 사용하지 않는다.
-// (함수를 남겨두는 이유: EdgeTtsEngine 호출부 계약 유지 + 실험 이력의 정본 기록.)
-export function edgePlaybackRate(_rate?: number): number {
-  return 1;
+// 재생속도: 사용자 방침(2026-07-06 "배속 상한 두지 말 것")에 따라 2×(서버 포화) 초과분을
+// 피치보정 스트레치로 흡수한다. ≤2×는 스트레치 0(원래 소리 그대로 — 사용자 검증).
+// 2× 초과 품질은 거칠어짐(24kHz 소스 실측: 유사3×=CER 38%) — 판단은 사용자 몫,
+// 대안 = 설정의 시스템 음성 전환 옵션.
+export function edgePlaybackRate(rate?: number): number {
+  const r = Number.isFinite(rate as number) ? (rate as number) : 1.0;
+  if (r <= EDGE_MAX_RATE) return 1;
+  return Math.min(10, r / EDGE_MAX_RATE);
 }

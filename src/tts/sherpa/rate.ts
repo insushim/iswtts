@@ -1,23 +1,31 @@
 // sherpa(Supertonic) 배속 매핑(순수 함수 — 테스트 대상).
 //
-// 2026-07-06 Whisper CER 실측(맥 sherpa-onnx python 1.12.34 + 동일 int8 모델):
-// - 모델 speed 는 음소 길이를 기계적으로 1/N 압축 → 1.5=CER26%, 2.0=72%, 3.0=82%
-//   ("2배속부터 씹힘, 3배속은 아예 생략" 사용자 보고의 실체). 고배속 합성 불가 모델.
-// - 자연속도(1.0) 합성 + 재생속도(피치보정 타임스트레치)는 온전: 2.0=CER10%(기준선 동급),
-//   3.0=18% — 44.1kHz 청정 WAV 라 스트레치가 잘 먹는다(Edge 24kHz mp3 보다 우수).
-// → 1× 초과는 전부 재생속도가 담당, 모델 speed 는 저속(≤1×, 자연스러운 느린 합성)에만 사용.
-// 재생속도 3.0 은 expo-audio Android 하드클램프(2.0)를 patches/expo-audio 로 3.0 까지 해제해 달성.
+// 사용자 방침(2026-07-06): 배속 상한 두지 않음 — 설정 배속은 무조건 그 속도로 재생하고
+// 품질 판단은 사용자가 한다. 단 같은 속도에서 가장 잘 들리는 분담을 쓴다(Whisper CER 실측):
+// - 모델 speed 솔로: 1.2=14%(온전), 1.5=26%, 2.0=72%, 3.0=82%, ≥4.0=전구간 무음.
+// - 재생 스트레치(피치보정) 솔로(자연속도 소스): 2.0=10%, 3.0=18%, 3.2=22%, 3.5=62%(절벽).
+// - 총 3.2× 초과에서는 "스트레치 3.0 고정 + 초과분 모델"이 순수 스트레치보다 우수
+//   (3.6×: 조합38% vs 순수62% / 4.0×: 조합48% vs 순수76%).
+// → 분담: 스트레치가 3.0까지 우선 → 초과분은 모델(무음 경계 3.0 클램프) → 9× 초과 잔여는
+//   다시 스트레치(하드맥스 10, expo-audio 패치 상한과 일치).
 
-export const SHERPA_PLAYBACK_MAX = 3.0; // 실효 총배속 상한(3× 초과는 클램프 or 시스템 전환 옵션)
+export const SHERPA_QUALITY_MAX = 3.2; // 품질 무손상 임계(시스템 음성 전환 옵션의 기준점)
+const SONIC_FIRST_MAX = 3.0; // 스트레치 단독 온전 상한
+const MODEL_MAX = 3.0; // 모델 speed ≥4.0 = 전 구간 무음(실측) — 하드 경계
+const PLAYBACK_HARD_MAX = 10.0; // expo-audio 패치(coerceIn 상한)와 일치
 
-// 모델이 분담할 배수 — 저속만. 1× 초과에 모델 speed 를 쓰면 음소 붕괴(CER 실측).
+// 모델이 분담할 배수. 저속(≤1×)은 모델 전담, 스트레치 온전 구간(≤3×)은 모델 개입 금지,
+// 그 초과분만 모델이 흡수한다.
 export function sherpaModelSpeed(rate?: number): number {
   const r = Number.isFinite(rate as number) ? (rate as number) : 1.0;
-  return Math.min(1, Math.max(0.5, r));
+  if (r <= 1) return Math.max(0.5, r);
+  if (r <= SONIC_FIRST_MAX) return 1;
+  return Math.min(MODEL_MAX, r / SONIC_FIRST_MAX);
 }
 
-// 재생속도가 분담할 배수(1× 초과 전부).
+// 재생속도가 분담할 배수(전체 ÷ 모델 몫).
 export function sherpaPlaybackRate(rate?: number): number {
   const r = Number.isFinite(rate as number) ? (rate as number) : 1.0;
-  return Math.max(1, Math.min(SHERPA_PLAYBACK_MAX, r));
+  if (r <= 1) return 1;
+  return Math.max(1, Math.min(PLAYBACK_HARD_MAX, r / sherpaModelSpeed(r)));
 }

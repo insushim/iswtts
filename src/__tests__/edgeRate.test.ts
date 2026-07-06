@@ -1,16 +1,20 @@
 import { edgeSsmlMult, edgeSsmlRatePct, edgePlaybackRate } from '../tts/edge/rate';
 import { resolveEdgeVoice, EDGE_VOICES } from '../tts/edge/voices';
 
-describe('edge 배속(순수 SSML — 재생 스트레치 금지)', () => {
+describe('edge 배속(≤2× 순수 SSML, 초과분 스트레치 — 상한 없음)', () => {
   test('1× — 중립', () => {
     expect(edgeSsmlRatePct(1)).toBe('+0%');
     expect(edgePlaybackRate(1)).toBe(1);
   });
 
-  test('재생 스트레치 상시 1.0 — 뭉개짐 아티팩트 재발 방지 핵심 불변식(사용자 청감 확정)', () => {
-    for (const r of [0.5, 1, 1.5, 2, 3, 10]) {
+  test('≤2×는 스트레치 0(원래 소리 그대로 — 사용자 청감 확정), 초과분만 스트레치 흡수', () => {
+    for (const r of [0.5, 1, 1.5, 2]) {
       expect(edgePlaybackRate(r)).toBe(1);
     }
+    // 상한 없음: 설정 배속 = 실효 배속(합성 2× × 스트레치)
+    expect(edgePlaybackRate(3)).toBeCloseTo(1.5, 5);
+    expect(edgePlaybackRate(4)).toBeCloseTo(2, 5);
+    expect(edgeSsmlMult(4) * edgePlaybackRate(4)).toBeCloseTo(4, 5);
   });
 
   test('배속은 전부 SSML — 요청 배속 그대로, 서버 포화점(2×)에서 클램프', () => {

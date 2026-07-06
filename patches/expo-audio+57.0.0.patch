@@ -1,5 +1,5 @@
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-index c76a9fd..5a7cbd2 100644
+index c76a9fd..38fcfdf 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 @@ -181,7 +181,9 @@ class AudioPlayer(
@@ -7,9 +7,9 @@ index c76a9fd..5a7cbd2 100644
  
    override fun setPlaybackRate(rate: Float) {
 -    val playbackRate = rate.coerceIn(0.1f, 2.0f)
-+    // PATCH(iwtts): 상한 2.0f -> 3.0f. Media3 PlaybackParameters 는 3.0 을 정상 지원하며
-+    // sherpa(오프라인) 엔진의 3배속이 이 클램프에 막혀 있었다(피치보정 Sonic 경로 동일).
-+    val playbackRate = rate.coerceIn(0.1f, 3.0f)
++    // PATCH(iwtts): 상한 2.0f -> 10.0f. Media3 PlaybackParameters/Sonic 은 고배속을 지원하며
++    // 앱 방침이 "설정 배속 무조건 적용"이라 클램프를 앱 설정 최대치(10)에 맞춘다.
++    val playbackRate = rate.coerceIn(0.1f, 10.0f)
      val pitch = if (preservesPitch) 1f else playbackRate
      ref.playbackParameters = PlaybackParameters(playbackRate, pitch)
    }
