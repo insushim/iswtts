@@ -113,10 +113,12 @@ export default function SettingsScreen() {
         if (!aliveRef.current) return;
         setModelState('none');
         const msg = String((e as Error)?.message || e);
+        // 실제 원인을 그대로 보여준다 — 뭉뚱그린 안내("인터넷/저장공간 확인")는 둘 다
+        // 멀쩡할 때 사용자가 원인을 좁힐 수 없었다(2026-07-06 실사용 보고).
         setDlError(
           /abort/i.test(msg)
             ? null // 사용자 취소는 오류 아님
-            : '다운로드에 실패했습니다. 인터넷 연결과 저장 공간을 확인해주세요.',
+            : `다운로드에 실패했습니다 — ${msg.slice(0, 140)}`,
         );
       },
     );
