@@ -5,11 +5,11 @@ import type { TtsEngine as NativeTts } from 'react-native-sherpa-onnx/tts';
 import type { TtsEngine, SpeakParams, SpeakHandlers, EngineVoice } from '../TtsEngine';
 import { sherpaModelPath } from '../../lib/sherpaModel';
 import { sherpaModelSpeed, sherpaPlaybackRate, sherpaTrimEnabled } from './rate';
-import { compressSilence } from './smartSpeed';
+import { compressSilence, trimEdgeSilence } from './smartSpeed';
+import { estimateWordBoundaries, type WordBoundary } from './align';
 
-type Boundary = { ms: number; charIndex: number; charLen: number };
 // trimFactor: 스마트 스피드(무음 압축)로 이미 번 배속(미압축=1) — 재생속도에서 이만큼 덜어낸다.
-type Synth = { uri: string; boundaries: Boundary[]; trimFactor: number };
+type Synth = { uri: string; boundaries: WordBoundary[]; trimFactor: number };
 type SynthState = { cancelled: boolean; uri: string | null };
 type CacheEntry = { promise: Promise<Synth>; cancel: () => void };
 
@@ -226,21 +226,6 @@ export class SherpaTtsEngine implements TtsEngine {
     }
   }
 
-  // 단어 타임스탬프(초 단위 start) → 문장 내 charIndex 매핑(EdgeTtsEngine 과 동일 로직).
-  private mapBoundaries(text: string, words: { text: string; start: number }[]): Boundary[] {
-    let cursor = 0;
-    const out: Boundary[] = [];
-    for (const w of words) {
-      const t = w.text.trim();
-      const ms = w.start * 1000;
-      if (!t) { out.push({ ms, charIndex: cursor, charLen: 0 }); continue; }
-      const idx = text.indexOf(t, cursor);
-      if (idx >= 0) { cursor = idx + t.length; out.push({ ms, charIndex: idx, charLen: t.length }); }
-      else out.push({ ms, charIndex: cursor, charLen: 0 });
-    }
-    return out;
-  }
-
   // 타임아웃 래퍼 — 네이티브 hang 1건이 직렬화 체인을 영구히 막지 않게 한다.
   // 주의: 타임아웃 후에도 네이티브 호출 자체는 중단되지 않으므로(중단 API 없음) 다음 합성이
   // hang 난 호출과 겹칠 수 있다 — 영구 데드락보다 나은 차악이고, 서킷브레이커가 곧 폴백시킨다.
@@ -264,28 +249,38 @@ export class SherpaTtsEngine implements TtsEngine {
     const native = await this.ensureNative();
     if (state.cancelled) throw new Error('cancelled');
 
+    // ⚠️ generateSpeech 로 바꾸지 말 것: 그 경로의 일반 모델 분기는 네이티브에서
+    // dispatchGenerate(text, sid, speed)로 options(extra.lang)를 통째로 버린다(소스 실측
+    // 2026-07-07) — 한국어가 영어 발음으로 깨지는 v1.6.2 버그 재발. lang 배선 패치
+    // (patches/react-native-sherpa-onnx+0.4.3.patch)는 이 타임스탬프 경로에만 걸려 있다.
     const audio = await native.generateSpeechWithTimestamps(text, {
       sid: Number.parseInt(params.voiceId || '0', 10) || 0,
       speed: sherpaModelSpeed(params.rate),
-      // extra.lang 은 patches/react-native-sherpa-onnx+0.4.3.patch 로 네이티브까지 배선됨
-      // (원본은 이 값을 버려 Supertonic 이 한국어를 영어 발음으로 읽었다 — 실측 2026-07-06).
       extra: { lang: langOf(params.language) },
-      subtitles: { mode: 'fast', granularity: 'word' },
+      // 자막 결과는 버린다(sentence 단위 = 최소 비용) — fast 모드는 앞뒤 무음·쉼을 발화로
+      // 깔고 계산한 글자수 비례 추정이라 하이라이트가 수백 ms 어긋났다(Whisper 대조 실측
+      // 2026-07-07). 단어 타임스탬프는 아래 자체 정렬(align.ts)로 계산한다.
+      subtitles: { mode: 'fast', granularity: 'sentence' },
     });
     if (state.cancelled) throw new Error('cancelled');
     if (!audio.samples?.length) throw new Error('오프라인 음성 합성 실패(빈 오디오)');
 
-    // 스마트 스피드: 초고배속(>3×)만 긴 쉼을 압축해 스트레치 부담을 덜어낸다(smartSpeed.ts).
-    // 단어 하이라이트 타임스탬프도 같은 매핑으로 보정.
-    let samples: number[] = audio.samples;
+    // 무음 처리(smartSpeed.ts):
+    // - ≤3×: 앞뒤 무음만 트림(말소리·내부 쉼 불변, 속도 보상 없음) — Supertonic 이 문장마다
+    //   박는 앞 ~0.4s·뒤 ~0.5s 죽은 공기가 "문장 전환 텀"의 주범(실측 2026-07-07).
+    // - >3×(스마트 스피드): 내부 긴 쉼까지 압축하고 그만큼 재생 스트레치를 덜어낸다.
+    let samples: number[];
     let trimFactor = 1;
-    let boundaries = this.mapBoundaries(text, audio.subtitles || []);
     if (sherpaTrimEnabled(params.rate)) {
       const c = compressSilence(audio.samples, audio.sampleRate);
       samples = c.samples;
       trimFactor = c.factor;
-      boundaries = boundaries.map((b) => ({ ...b, ms: c.mapMs(b.ms) }));
+    } else {
+      samples = trimEdgeSilence(audio.samples, audio.sampleRate);
     }
+    // 단어 하이라이트: 최종(트림 후) 샘플에서 발화 구간 위에만 글자수 비례 분배 — 쉼 동안
+    // 하이라이트가 전진하지 않고, 무음 오프셋 오차가 원천 제거된다.
+    const boundaries = estimateWordBoundaries(text, samples, audio.sampleRate);
     if (state.cancelled) throw new Error('cancelled');
 
     // 네이티브 WAV 저장은 file:// 없는 절대경로, expo-audio 재생은 file:// URI.

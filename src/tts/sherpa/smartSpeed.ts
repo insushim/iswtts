@@ -11,7 +11,10 @@
 
 const HOP_MS = 10; // 판정 창(피크 측정 단위)
 const MIN_PAUSE_MS = 160; // 이보다 짧은 쉼은 건드리지 않음(단어 사이 미세 간격 보존)
-const KEEP_SIDE_MS = 40; // 압축 후 말소리 쪽에 남기는 쉼(내부 쉼은 양쪽 40ms = 총 80ms)
+// 압축 후 말소리 쪽에 남기는 쉼(내부 쉼은 양쪽 40ms = 총 80ms).
+// ⚠️ align.ts PAUSE_MIN_MS(120)와 결합: 압축된 쉼(80ms)이 그 임계 미만이어야 >3× 정렬이
+// 균등 분배로 폴백한다(의도) — 이 값을 키우면 align.ts 주석과 함께 재검토할 것.
+const KEEP_SIDE_MS = 40;
 // 무음 문턱: 전체 피크 대비 2%(−34dB), 바닥 0.004(정규화 안 된 저음량 출력 대비),
 // 상한 0.02(과대 피크로 문턱이 치솟아 말소리를 무음 취급하는 것 방지).
 const THRESH_FLOOR = 0.004;
@@ -19,17 +22,19 @@ const THRESH_CAP = 0.02;
 const THRESH_REL = 0.02;
 
 export type SilenceCut = { start: number; end: number }; // 원본 샘플 인덱스 [start, end)
+export type QuietRun = { s: number; e: number }; // 무음 창 연속 구간(샘플 인덱스, 최소 길이 필터 없음)
 
 export type CompressedAudio = {
   samples: number[];
   /** 원본길이 ÷ 압축길이(≥1). 재생 스트레치를 이만큼 덜어낸다(rate.ts). */
   factor: number;
-  /** 원본 타임스탬프(ms) → 압축 후 ms (단어 하이라이트 보정용). 단조 증가. */
+  /** 원본 타임스탬프(ms) → 압축 후 ms. 단조 증가. (하이라이트는 v1.13.0부터 align.ts 가
+   *  압축 후 샘플에서 직접 계산 — 이 매핑은 외부 타임스탬프 보정이 필요한 경우용/테스트 스펙.) */
   mapMs: (ms: number) => number;
 };
 
-// 잘라낼 구간 계산(테스트 대상 핵심 로직 — 샘플 복사와 분리).
-export function findSilenceCuts(samples: ArrayLike<number>, sampleRate: number): SilenceCut[] {
+// 무음 창 연속 구간(최소 길이 필터 없음) — 압축·앞뒤 트림·단어 정렬(align.ts)의 공용 기반.
+export function quietRuns(samples: ArrayLike<number>, sampleRate: number): QuietRun[] {
   const n = samples.length;
   const hop = Math.max(1, Math.round((sampleRate * HOP_MS) / 1000));
   const nWin = Math.ceil(n / hop);
@@ -49,27 +54,78 @@ export function findSilenceCuts(samples: ArrayLike<number>, sampleRate: number):
   }
   const thresh = Math.min(THRESH_CAP, Math.max(THRESH_FLOOR, globalPeak * THRESH_REL));
 
-  const minPause = (sampleRate * MIN_PAUSE_MS) / 1000;
-  const keepSide = Math.round((sampleRate * KEEP_SIDE_MS) / 1000);
-  const cuts: SilenceCut[] = [];
+  const runs: QuietRun[] = [];
   let runStart = -1;
   for (let w = 0; w <= nWin; w++) {
     const quiet = w < nWin && winPeak[w] <= thresh;
     if (quiet && runStart < 0) runStart = w;
     if (!quiet && runStart >= 0) {
-      const s = runStart * hop;
-      const e = Math.min(n, w * hop);
+      runs.push({ s: runStart * hop, e: Math.min(n, w * hop) });
       runStart = -1;
-      if (e - s < minPause) continue;
-      const atStart = s === 0;
-      const atEnd = e === n;
-      // 말소리와 맞닿은 쪽만 남긴다 — 앞뒤 무음은 한쪽, 내부 쉼은 양쪽.
-      const cutS = s + (atStart ? 0 : keepSide);
-      const cutE = e - (atEnd ? 0 : keepSide);
-      if (cutE > cutS) cuts.push({ start: cutS, end: cutE });
     }
   }
+  return runs;
+}
+
+// 잘라낼 구간 계산(테스트 대상 핵심 로직 — 샘플 복사와 분리).
+export function findSilenceCuts(samples: ArrayLike<number>, sampleRate: number): SilenceCut[] {
+  const n = samples.length;
+  const minPause = (sampleRate * MIN_PAUSE_MS) / 1000;
+  const keepSide = Math.round((sampleRate * KEEP_SIDE_MS) / 1000);
+  const cuts: SilenceCut[] = [];
+  for (const r of quietRuns(samples, sampleRate)) {
+    if (r.e - r.s < minPause) continue;
+    const atStart = r.s === 0;
+    const atEnd = r.e === n;
+    // 말소리와 맞닿은 쪽만 남긴다 — 앞뒤 무음은 한쪽, 내부 쉼은 양쪽.
+    const cutS = r.s + (atStart ? 0 : keepSide);
+    const cutE = r.e - (atEnd ? 0 : keepSide);
+    if (cutE > cutS) cuts.push({ start: cutS, end: cutE });
+  }
   return cuts;
+}
+
+// 문장 앞뒤 무음만 제거(내부 쉼·말소리 불변 — 전 배속 공용).
+// Supertonic 은 문장마다 앞 ~0.4s·뒤 ~0.5s 무음을 박아 생성(실측 2026-07-07) — 문장 전환
+// 시 "죽은 공기" ~0.9s 의 주범. 자연스러운 문장 간 숨은 패드로 남긴다.
+const EDGE_MIN_MS = 80; // 이보다 짧은 앞뒤 무음은 그대로(오탐 방지)
+const LEAD_PAD_MS = 40; // 트림 후 남길 문장 머리 여유
+const TRAIL_PAD_MS = 120; // 트림 후 남길 문장 꼬리 여유(문장 간 최소 숨)
+
+export function edgeSilenceCuts(samples: ArrayLike<number>, sampleRate: number): SilenceCut[] {
+  const n = samples.length;
+  const runs = quietRuns(samples, sampleRate);
+  if (!runs.length) return [];
+  const ms = (v: number) => (v * 1000) / sampleRate;
+  const cuts: SilenceCut[] = [];
+  const first = runs[0];
+  if (first.s === 0 && ms(first.e - first.s) >= EDGE_MIN_MS + LEAD_PAD_MS && first.e < n) {
+    cuts.push({ start: 0, end: first.e - Math.round((sampleRate * LEAD_PAD_MS) / 1000) });
+  }
+  const last = runs[runs.length - 1];
+  if (last.e === n && ms(last.e - last.s) >= EDGE_MIN_MS + TRAIL_PAD_MS && last.s > 0) {
+    cuts.push({ start: last.s + Math.round((sampleRate * TRAIL_PAD_MS) / 1000), end: n });
+  }
+  return cuts;
+}
+
+// 앞뒤 무음 트림 적용(≤3× 경로 — 속도 보상 없음: 죽은 공기 제거일 뿐 말소리 속도는 불변).
+export function trimEdgeSilence(samples: ArrayLike<number>, sampleRate: number): number[] {
+  const cuts = edgeSilenceCuts(samples, sampleRate);
+  if (!cuts.length) return Array.from(samples);
+  const n = samples.length;
+  let removed = 0;
+  for (const c of cuts) removed += c.end - c.start;
+  if (removed >= n) return Array.from(samples); // 전체 무음 — 원본 유지(compressSilence 와 동일 방침)
+  const out = new Array<number>(n - removed);
+  let w = 0;
+  let pos = 0;
+  for (const c of cuts) {
+    for (let i = pos; i < c.start; i++) out[w++] = samples[i];
+    pos = c.end;
+  }
+  for (let i = pos; i < n; i++) out[w++] = samples[i];
+  return out;
 }
 
 export function compressSilence(samples: ArrayLike<number>, sampleRate: number): CompressedAudio {
