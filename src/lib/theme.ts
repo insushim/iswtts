@@ -24,8 +24,10 @@ const light: Palette = {
   faint: '#b7b7c4',
   primary: '#6366f1',
   onPrimary: '#ffffff',
-  highlight: '#fde68a',
-  highlightText: '#3b2f00',
+  // 읽는 단어 하이라이트: 브랜드(인디고) 계열의 은은한 배경 — 샛노란색은 촌스럽다는
+  // 사용자 피드백(2026-07-08)으로 교체. 본문 대비는 진한 인디고 글자로 확보.
+  highlight: '#e0e7ff',
+  highlightText: '#3730a3',
   border: '#e6e6ee',
   danger: '#e5484d',
 };
@@ -39,8 +41,9 @@ const dark: Palette = {
   faint: '#55556a',
   primary: '#818cf8',
   onPrimary: '#10101a',
-  highlight: '#b45309',
-  highlightText: '#fff7e6',
+  // 다크에서도 주황/노랑 대신 인디고 계열(라이트와 동일 방침).
+  highlight: '#4338ca',
+  highlightText: '#eef2ff',
   border: '#2a2a36',
   danger: '#ff6b6f',
 };

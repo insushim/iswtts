@@ -5,6 +5,7 @@ import type { TtsEngine as NativeTts } from 'react-native-sherpa-onnx/tts';
 import type { TtsEngine, SpeakParams, SpeakHandlers, EngineVoice } from '../TtsEngine';
 import { sherpaModelPath } from '../../lib/sherpaModel';
 import { sherpaModelSpeed, sherpaPlaybackRate, sherpaTrimEnabled } from './rate';
+import { disposePlayer } from '../disposePlayer';
 import { compressSilence, trimEdgeSilence } from './smartSpeed';
 import { estimateWordBoundaries, type WordBoundary } from './align';
 
@@ -25,7 +26,7 @@ function releasePreload(entry: CacheEntry): void {
   const p = entry.player;
   if (!p) return;
   entry.player = undefined;
-  try { p.remove(); } catch { /* noop */ }
+  disposePlayer(p);
 }
 
 // 배속: 모델 speed 는 저속(≤1×)에만, 1× 초과는 전부 재생속도(피치보정) — 근거·CER 실측은 rate.ts.
@@ -73,6 +74,10 @@ export class SherpaTtsEngine implements TtsEngine {
   private currentUri: string | null = null;
   private pendingSynth: CacheEntry | null = null;
   private cache = new Map<string, CacheEntry>();
+  // 현재 재생 중 오디오의 합성 파라미터 — setRate 라이브 적용 가능 판정용.
+  private currentModelSpeed: number | null = null;
+  private currentTrimEnabled: boolean | null = null;
+  private currentTrimFactor = 1;
 
   speak(text: string, params: SpeakParams, handlers: SpeakHandlers): void {
     const myGen = ++this.playGen;
@@ -146,6 +151,21 @@ export class SherpaTtsEngine implements TtsEngine {
     this.playGen++;
     this.teardownPlayback();
     this.clearCache();
+  }
+
+  // 재생 중 배속 라이브 변경. 합성은 자연속도 고정이라(≤3×: 모델 speed=1·무음압축 off)
+  // 그 구간 안에서는 스트레치만 바꿔 끼우면 된다 — 재합성·끊김 0. 합성 파라미터가 달라지는
+  // 경계(1× 이하·3× 초과)를 넘나들면 false — 호출부가 재발화로 폴백.
+  setRate(rate: number): boolean {
+    if (!this.player || this.currentModelSpeed === null) return false;
+    if (this.currentModelSpeed !== sherpaModelSpeed(rate)) return false;
+    if (this.currentTrimEnabled !== sherpaTrimEnabled(rate)) return false;
+    try {
+      this.player.setPlaybackRate(sherpaPlaybackRate(rate, this.currentTrimFactor));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async getVoices(): Promise<EngineVoice[]> {
@@ -264,7 +284,10 @@ export class SherpaTtsEngine implements TtsEngine {
     }
     if (this.poll) { clearInterval(this.poll); this.poll = null; }
     if (this.statusSub) { try { this.statusSub.remove(); } catch { /* noop */ } this.statusSub = null; }
-    if (this.player) { try { this.player.pause(); this.player.remove(); } catch { /* noop */ } this.player = null; }
+    if (this.player) { const p = this.player; this.player = null; disposePlayer(p); }
+    this.currentModelSpeed = null;
+    this.currentTrimEnabled = null;
+    this.currentTrimFactor = 1;
     if (this.currentUri) {
       const u = this.currentUri;
       this.currentUri = null;
@@ -353,6 +376,9 @@ export class SherpaTtsEngine implements TtsEngine {
   ): void {
     try {
       this.currentUri = synth.uri;
+      this.currentModelSpeed = sherpaModelSpeed(params.rate);
+      this.currentTrimEnabled = sherpaTrimEnabled(params.rate);
+      this.currentTrimFactor = synth.trimFactor;
       const boundaries = synth.boundaries;
       let bi = 0;
 

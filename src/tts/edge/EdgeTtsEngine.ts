@@ -22,6 +22,7 @@ import {
 } from './protocol';
 import { EDGE_VOICES, defaultEdgeVoice, resolveEdgeVoice } from './voices';
 import { edgeSsmlRatePct, edgePlaybackRate } from './rate';
+import { disposePlayer } from '../disposePlayer';
 
 type Word = { text: string; offsetMs: number };
 type Boundary = { ms: number; charIndex: number; charLen: number };
@@ -41,7 +42,7 @@ function releasePreload(entry: CacheEntry): void {
   const p = entry.player;
   if (!p) return;
   entry.player = undefined;
-  try { p.remove(); } catch { /* noop */ }
+  disposePlayer(p);
 }
 
 const CONNECT_TIMEOUT_MS = 8000;
@@ -70,6 +71,8 @@ export class EdgeTtsEngine implements TtsEngine {
   private poll: ReturnType<typeof setInterval> | null = null;
   private statusSub: { remove: () => void } | null = null;
   private currentUri: string | null = null;
+  // 현재 재생 중 오디오가 어떤 SSML 배속으로 합성됐는지 — setRate 라이브 적용 가능 판정용.
+  private currentSsmlPct: string | null = null;
   // 현재 speak가 재생을 기다리는 중인 합성(아직 재생 전). teardown 시 취소해 낭비되는 WS를 끊는다.
   private pendingSynth: CacheEntry | null = null;
   // 선행 합성 캐시(key=voice|rate|lang|text)
@@ -150,6 +153,20 @@ export class EdgeTtsEngine implements TtsEngine {
     this.clearCache();
   }
 
+  // 재생 중 배속 라이브 변경. 오디오 자체가 SSML 배속을 품고 있어, 새 배속의 SSML 몫이
+  // 지금 재생 중인 오디오와 같을 때만(예: 2.0→2.5, 둘 다 "+100%") 스트레치 몫만 바꿔 끼운다.
+  // 다르면 false — 호출부가 재발화로 폴백. 단어 경계는 오디오 타임라인 기준이라 영향 없음.
+  setRate(rate: number): boolean {
+    if (!this.player || this.currentSsmlPct === null) return false;
+    if (this.currentSsmlPct !== edgeSsmlRatePct(rate)) return false;
+    try {
+      this.player.setPlaybackRate(edgePlaybackRate(rate));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async getVoices(): Promise<EngineVoice[]> {
     return EDGE_VOICES;
   }
@@ -196,7 +213,8 @@ export class EdgeTtsEngine implements TtsEngine {
     if (this.pendingSynth) { this.pendingSynth.cancel(); this.pendingSynth = null; }
     if (this.poll) { clearInterval(this.poll); this.poll = null; }
     if (this.statusSub) { try { this.statusSub.remove(); } catch { /* noop */ } this.statusSub = null; }
-    if (this.player) { try { this.player.pause(); this.player.remove(); } catch { /* noop */ } this.player = null; }
+    if (this.player) { const p = this.player; this.player = null; disposePlayer(p); }
+    this.currentSsmlPct = null;
     if (this.currentUri) { const u = this.currentUri; this.currentUri = null; deleteAsync(u, { idempotent: true }).catch(() => { /* noop */ }); }
   }
 
@@ -332,6 +350,7 @@ export class EdgeTtsEngine implements TtsEngine {
   ): void {
     try {
       this.currentUri = synth.uri;
+      this.currentSsmlPct = edgeSsmlRatePct(params.rate);
       const boundaries = synth.boundaries;
       let bi = 0;
 

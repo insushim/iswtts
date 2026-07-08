@@ -73,6 +73,8 @@ export type PlayerState = {
   next: () => void;
   prev: () => void;
   seek: (index: number) => void;
+  // 재생 중 배속 변경 반영: 엔진이 라이브 적용 가능하면 끊김 0, 아니면 현재 문장 재발화.
+  applyRate: (rate: number) => void;
   unload: () => void;
 };
 
@@ -318,6 +320,28 @@ export const usePlayer = create<PlayerState>((set, get) => {
         const { docId } = get();
         if (docId) useLibrary.getState().setProgress(docId, index - 1, sentences.length);
       }
+    },
+
+    applyRate: (rate) => {
+      if (!get().playing) return;
+      // 고배속 시스템 전환 옵션이 켜져 있으면, 새 배속이 품질임계를 넘나들 때 발화 엔진
+      // 자체가 바뀌어야 한다(speakCurrent 의 전환 로직) — 라이브 적용으로 건너뛰면 그
+      // 문장만 설정이 무시된다(교차검증 발견 2026-07-08). 이 경우 재발화 경로로.
+      const s = useSettings.getState();
+      if (s.highSpeedSystemVoice) {
+        const wantMax =
+          s.engineId === 'edge' ? EDGE_MAX_RATE : s.engineId === 'sherpa' ? SHERPA_QUALITY_MAX : Infinity;
+        const shouldBeSystem = rate > wantMax;
+        if (shouldBeSystem !== (activeEngine === systemEngine)) {
+          get().seek(get().index);
+          return;
+        }
+      }
+      // 현재 울리는 문장에 라이브 적용을 시도 — 성공하면 재합성·침묵 없이 즉시 새 속도.
+      // (sherpa 1×~3× 구간, Edge 는 SSML 몫이 같은 구간(2×↔2.5×↔3×…)에서 성공.)
+      if (activeEngine.setRate?.(rate)) return;
+      // 불가(합성 파라미터가 달라짐) — 현재 문장을 새 배속으로 재발화.
+      get().seek(get().index);
     },
 
     seek: (i) => {

@@ -21,6 +21,56 @@ import type { RootStackParamList } from '../../App';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
 
+// ── 컨트롤 아이콘(순수 View — 이모지 글리프는 기기·폰트마다 모양이 제각각이고 촌스럽다는
+// 피드백(2026-07-08)으로 교체. 아이콘 폰트 의존성 없이 도형으로 그린다) ─────────────
+function PlayIcon({ color, size = 26 }: { color: string; size?: number }) {
+  return (
+    <View
+      style={{
+        width: 0,
+        height: 0,
+        marginLeft: size * 0.18, // 삼각형 무게중심 보정(원 안에서 시각적 중앙)
+        borderTopWidth: size * 0.58,
+        borderBottomWidth: size * 0.58,
+        borderLeftWidth: size,
+        borderTopColor: 'transparent',
+        borderBottomColor: 'transparent',
+        borderLeftColor: color,
+      }}
+    />
+  );
+}
+
+function PauseIcon({ color, size = 26 }: { color: string; size?: number }) {
+  const bar = { width: size * 0.28, height: size, borderRadius: size * 0.14, backgroundColor: color };
+  return (
+    <View style={{ flexDirection: 'row', gap: size * 0.28 }}>
+      <View style={bar} />
+      <View style={bar} />
+    </View>
+  );
+}
+
+function SkipIcon({ color, dir, size = 18 }: { color: string; dir: -1 | 1; size?: number }) {
+  const tri = {
+    width: 0,
+    height: 0,
+    borderTopWidth: size * 0.5,
+    borderBottomWidth: size * 0.5,
+    borderTopColor: 'transparent',
+    borderBottomColor: 'transparent',
+    ...(dir === 1
+      ? { borderLeftWidth: size * 0.8, borderLeftColor: color }
+      : { borderRightWidth: size * 0.8, borderRightColor: color }),
+  } as const;
+  return (
+    <View style={{ flexDirection: dir === 1 ? 'row' : 'row-reverse', alignItems: 'center', gap: 2.5 }}>
+      <View style={tri} />
+      <View style={{ width: size * 0.18, height: size, borderRadius: 2, backgroundColor: color }} />
+    </View>
+  );
+}
+
 export default function PlayerScreen({ route, navigation }: Props) {
   const p = usePalette();
   const insets = useSafeAreaInsets();
@@ -123,10 +173,8 @@ export default function PlayerScreen({ route, navigation }: Props) {
     // (설정 스테퍼로 만든 프리셋 밖 값 0.5·1.75·4.75 등에서도 0.75로 급락하지 않음)
     const nextRate = RATE_STEPS.find((s) => s > rate + 0.001) ?? RATE_STEPS[0];
     setSettings({ rate: nextRate });
-    // 재생 중이면 즉시 반영(현재 문장을 새 속도로 다시 발화)
-    if (usePlayer.getState().playing) {
-      usePlayer.getState().seek(usePlayer.getState().index);
-    }
+    // 재생 중이면 즉시 반영 — 가능하면 라이브(끊김 0), 불가하면 현재 문장 재발화.
+    usePlayer.getState().applyRate(nextRate);
   };
 
   if (loading) {
@@ -235,38 +283,38 @@ export default function PlayerScreen({ route, navigation }: Props) {
         <TouchableOpacity
           onPress={() => player.prev()}
           hitSlop={10}
-          style={styles.ctrlBtn}
+          style={[styles.ctrlBtn, { backgroundColor: p.surface, borderColor: p.border }]}
+          activeOpacity={0.7}
           accessibilityRole="button"
           accessibilityLabel="이전 문장"
         >
-          <Text style={[styles.ctrlIcon, { color: p.text }]}>⏮</Text>
+          <SkipIcon color={p.text} dir={-1} />
         </TouchableOpacity>
 
         <TouchableOpacity
           onPress={() => player.toggle()}
-          style={[styles.playBtn, { backgroundColor: p.primary }]}
+          style={[styles.playBtn, { backgroundColor: p.primary, shadowColor: p.primary }]}
           activeOpacity={0.85}
           accessibilityRole="button"
           accessibilityLabel={playing ? '일시정지' : '재생'}
         >
-          <Text style={[styles.playIcon, { color: p.onPrimary }]}>
-            {playing ? '⏸' : '▶'}
-          </Text>
+          {playing ? <PauseIcon color={p.onPrimary} /> : <PlayIcon color={p.onPrimary} />}
         </TouchableOpacity>
 
         <TouchableOpacity
           onPress={() => player.next()}
           hitSlop={10}
-          style={styles.ctrlBtn}
+          style={[styles.ctrlBtn, { backgroundColor: p.surface, borderColor: p.border }]}
+          activeOpacity={0.7}
           accessibilityRole="button"
           accessibilityLabel="다음 문장"
         >
-          <Text style={[styles.ctrlIcon, { color: p.text }]}>⏭</Text>
+          <SkipIcon color={p.text} dir={1} />
         </TouchableOpacity>
 
         <TouchableOpacity
           onPress={cycleRate}
-          style={[styles.rateBtn, { borderColor: p.border }]}
+          style={[styles.rateBtn, { borderColor: p.border, backgroundColor: p.surface }]}
           accessibilityRole="button"
           accessibilityLabel={`재생 속도 ${rate}배. 누르면 다음 단계로 변경`}
         >
@@ -329,17 +377,25 @@ const styles = StyleSheet.create({
     gap: 20,
     paddingTop: 20,
   },
-  ctrlBtn: { padding: 10 },
-  ctrlIcon: { fontSize: 30 },
-  playBtn: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+  ctrlBtn: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    elevation: 4,
   },
-  playIcon: { fontSize: 30 },
+  playBtn: {
+    width: 78,
+    height: 78,
+    borderRadius: 39,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 6,
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+  },
   rateBtn: {
     borderWidth: 1,
     borderRadius: 18,
@@ -348,5 +404,5 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 20,
   },
-  rateText: { fontSize: 14, fontWeight: '700' },
+  rateText: { fontSize: 14, fontWeight: '700', fontVariant: ['tabular-nums'] },
 });

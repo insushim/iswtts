@@ -435,8 +435,16 @@ export default function SettingsScreen() {
       <Row
         label="속도"
         value={`${s.rate}×`}
-        onDec={() => s.set({ rate: clamp(s.rate - 0.5, 0.5, rateMax) })}
-        onInc={() => s.set({ rate: clamp(s.rate + 0.5, 0.5, rateMax) })}
+        onDec={() => {
+          const r = clamp(s.rate - 0.5, 0.5, rateMax);
+          s.set({ rate: r });
+          usePlayer.getState().applyRate(r); // 재생 중이면 즉시 반영(가능 시 라이브)
+        }}
+        onInc={() => {
+          const r = clamp(s.rate + 0.5, 0.5, rateMax);
+          s.set({ rate: r });
+          usePlayer.getState().applyRate(r);
+        }}
       />
       <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 2 }}>
         최대 {rateMax}×까지, 설정한 배속이 그대로 적용됩니다. 배속해도 음높이는 유지돼요.

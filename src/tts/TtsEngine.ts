@@ -31,4 +31,7 @@ export interface TtsEngine {
   // 선택: 다음에 읽을 문장을 미리 합성해 둔다(온라인 엔진의 문장 간 딜레이 제거용).
   // 지원 엔진(Edge)만 구현. 시스템 엔진은 즉시 발화라 불필요.
   prefetch?(text: string, params: SpeakParams): void;
+  // 선택: 재생 중 배속을 문장 재발화 없이 즉시 반영. 현재 문장의 합성 파라미터가 새 배속과
+  // 호환될 때만 가능(true 반환). false 면 호출부가 재발화로 폴백한다.
+  setRate?(rate: number): boolean;
 }
