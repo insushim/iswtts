@@ -17,7 +17,11 @@ type CacheEntry = { promise: Promise<Synth>; cancel: () => void };
 // (v1.6.2 의 "전부 모델 speed" 방침은 Whisper CER 실측으로 폐기: 모델 2.0=CER72%, 3.0=82%
 //  — "2배속부터 씹힘"의 근본원인. 재생속도 2.0=CER10% 로 온전. 과거 "setPlaybackRate 기기별
 //  무음" 보고는 당시 모델 speed≥4 무음과 뒤섞인 미확정 귀속 — 재발 시 이 줄에 실측 기록할 것.)
-const MAX_CACHE = 2;
+// 재생 중 유닛 1 + 선행 합성 3(player.ts PREFETCH_UNITS) — 배속에서 파이프라인이 마르지 않는 깊이.
+// (합성은 체인 직렬이라 동시 부하는 그대로 1건씩 — 큐만 깊어진다.)
+const MAX_CACHE = 4;
+// 네이티브 상태 이벤트 주기(ms). PiP에선 JS 타이머가 얼어붙어 이 이벤트만이 자막을 움직인다.
+const STATUS_UPDATE_MS = 80;
 // 합성 1건 상한(첫 호출의 모델 로드 포함). 네이티브 hang 시 직렬화 체인 전체가 영구
 // 대기하는 것을 막는다 — 초과 시 이 건만 실패시키고(폴백 유도) 체인은 계속 흐른다.
 const SYNTH_TIMEOUT_MS = 60_000;
@@ -304,7 +308,7 @@ export class SherpaTtsEngine implements TtsEngine {
       const boundaries = synth.boundaries;
       let bi = 0;
 
-      const player = createAudioPlayer(synth.uri);
+      const player = createAudioPlayer(synth.uri, { updateInterval: STATUS_UPDATE_MS });
       this.player = player;
       // 1× 초과 배속은 여기(피치보정 재생속도)가 담당 — 합성은 자연속도(rate.ts 근거).
       // 3.0 까지 허용은 patches/expo-audio(coerceIn 상한 해제) 필요.
@@ -312,9 +316,20 @@ export class SherpaTtsEngine implements TtsEngine {
       try { (player as any).shouldCorrectPitch = true; } catch { /* noop */ }
       const pr = sherpaPlaybackRate(params.rate, synth.trimFactor);
       if (pr !== 1) { try { player.setPlaybackRate(pr); } catch { /* noop */ } }
+
+      // 하이라이트 전진 — JS 타이머(포그라운드, 60ms)와 네이티브 상태 이벤트(PiP에서도 도착)
+      // 양쪽에서 부른다. bi 단조 증가라 두 경로가 겹쳐도 중복 없음.
+      const advance = (ms: number) => {
+        while (bi < boundaries.length && boundaries[bi].ms <= ms) {
+          handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen);
+          bi++;
+        }
+      };
+
       this.statusSub = player.addListener('playbackStatusUpdate', (st: any) => {
         if (myGen !== this.playGen || this.player !== player) return;
         if (st?.error) { this.teardownPlayback(); handlers.onError?.(new Error('오프라인 음성 재생 오류')); return; }
+        advance((st?.currentTime || 0) * 1000);
         if (st?.didJustFinish) {
           while (bi < boundaries.length) { handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen); bi++; }
           this.teardownPlayback();
@@ -324,11 +339,7 @@ export class SherpaTtsEngine implements TtsEngine {
 
       this.poll = setInterval(() => {
         if (myGen !== this.playGen || this.player !== player) return;
-        const ms = (player.currentTime || 0) * 1000;
-        while (bi < boundaries.length && boundaries[bi].ms <= ms) {
-          handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen);
-          bi++;
-        }
+        advance((player.currentTime || 0) * 1000);
       }, 60);
 
       player.play();

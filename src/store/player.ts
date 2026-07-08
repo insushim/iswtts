@@ -121,6 +121,10 @@ function segsOf(sentences: string[]): DialogueSegment[][] {
 // Edge 2× 초과 자동 전환 안내는 앱 실행당 1회만(문장마다 배너가 뜨면 소음).
 let highSpeedNoticeShown = false;
 
+// 선행 합성 깊이(발화 유닛 수). 엔진 캐시 상한(MAX_CACHE=4)보다 1 작게 유지해
+// 재생 중 유닛 + 선행 3개가 캐시에서 서로를 밀어내지 않게 한다.
+const PREFETCH_UNITS = 3;
+
 export const usePlayer = create<PlayerState>((set, get) => {
   const speakCurrent = () => {
     const { sentences, index, docId } = get();
@@ -229,18 +233,22 @@ export const usePlayer = create<PlayerState>((set, get) => {
         },
       });
 
-      // 다음 발화 단위를 미리 합성(문장 간·세그먼트 간 딜레이 제거). 시스템 엔진은 no-op.
+      // 다음 발화 단위들을 미리 합성(문장 간·세그먼트 간 딜레이 제거). 시스템 엔진은 no-op.
+      // 깊이 3유닛: 배속에서는 재생이 합성보다 먼저 끝나 깊이 1로는 파이프라인이 말라붙고,
+      // 그 대기 텀이 문장마다 들쭉날쭉해 낭독 리듬이 무너진다(2026-07-08 사용자 보고 —
+      // "1.5×에서 속도가 일정하지 않다"의 실체). 상한은 엔진 캐시(MAX_CACHE)가 관리.
       if (!fellBack) {
-        if (si < segs.length - 1) {
-          const nseg = segs[si + 1];
-          engine.prefetch?.(nseg.text, speakParams(engineId, nseg.dialogue));
-        } else {
-          const nextIdx = index + 1;
-          if (nextIdx < sentences.length) {
-            const nseg = allSegs?.[nextIdx]?.[0] ?? { text: sentences[nextIdx], start: 0, dialogue: false };
-            engine.prefetch?.(nseg.text, speakParams(engineId, nseg.dialogue));
+        const upcoming: DialogueSegment[] = [];
+        for (let k = si + 1; k < segs.length && upcoming.length < PREFETCH_UNITS; k++) {
+          upcoming.push(segs[k]);
+        }
+        for (let n = index + 1; n < sentences.length && upcoming.length < PREFETCH_UNITS; n++) {
+          const nsegs = allSegs?.[n] ?? [{ text: sentences[n], start: 0, dialogue: false }];
+          for (let k = 0; k < nsegs.length && upcoming.length < PREFETCH_UNITS; k++) {
+            upcoming.push(nsegs[k]);
           }
         }
+        for (const u of upcoming) engine.prefetch?.(u.text, speakParams(engineId, u.dialogue));
       }
     };
     speakSegment(0);

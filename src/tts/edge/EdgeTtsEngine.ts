@@ -33,7 +33,11 @@ const CONNECT_TIMEOUT_MS = 8000;
 // 연결 후 합성 전체(오디오 수신 완료까지)의 상한. 기존엔 연결 타이머가 끝까지 살아 있어
 // 8초 넘는 정상 합성(긴 문장·느린 망)도 "연결 시간 초과"로 오탐 종료됐다 → 단계별 타이머로 분리.
 const SYNTH_TIMEOUT_MS = 25000;
-const MAX_CACHE = 2;
+// 재생 중 유닛 1 + 선행 합성 3(player.ts PREFETCH_UNITS) — 배속에서 파이프라인이 마르지 않는 깊이.
+const MAX_CACHE = 4;
+// 네이티브 상태 이벤트 주기(ms). PiP(작은 창)에선 Android가 액티비티를 pause시켜 JS 타이머가
+// 얼어붙는다 — 이 이벤트는 액티비티 생명주기와 무관한 코루틴에서 계속 도착해 자막을 움직인다.
+const STATUS_UPDATE_MS = 80;
 
 // Edge(Read Aloud) 온라인 신경망 엔진. 문장 하나 = WebSocket 요청 하나(오디오+단어타이밍) →
 // 파일로 받아 expo-audio 로 재생, 재생위치를 폴링해 기존 onBoundary 콜백으로 단어 하이라이트.
@@ -283,15 +287,25 @@ export class EdgeTtsEngine implements TtsEngine {
       const boundaries = synth.boundaries;
       let bi = 0;
 
-      const player = createAudioPlayer(synth.uri);
+      const player = createAudioPlayer(synth.uri, { updateInterval: STATUS_UPDATE_MS });
       this.player = player;
       try { (player as any).shouldCorrectPitch = true; } catch { /* noop */ }
       const pr = edgePlaybackRate(params.rate);
       if (pr !== 1) { try { player.setPlaybackRate(pr); } catch { /* noop */ } }
 
+      // 하이라이트 전진 — JS 타이머(포그라운드, 60ms)와 네이티브 상태 이벤트(PiP에서도 도착)
+      // 양쪽에서 부른다. bi 단조 증가라 두 경로가 겹쳐도 중복 없음.
+      const advance = (ms: number) => {
+        while (bi < boundaries.length && boundaries[bi].ms <= ms) {
+          handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen);
+          bi++;
+        }
+      };
+
       this.statusSub = player.addListener('playbackStatusUpdate', (st: any) => {
         if (myGen !== this.playGen || this.player !== player) return;
         if (st?.error) { this.teardownPlayback(); handlers.onError?.(new Error('Edge TTS 재생 오류')); return; }
+        advance((st?.currentTime || 0) * 1000);
         if (st?.didJustFinish) {
           while (bi < boundaries.length) { handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen); bi++; }
           this.teardownPlayback();
@@ -301,11 +315,7 @@ export class EdgeTtsEngine implements TtsEngine {
 
       this.poll = setInterval(() => {
         if (myGen !== this.playGen || this.player !== player) return;
-        const ms = (player.currentTime || 0) * 1000;
-        while (bi < boundaries.length && boundaries[bi].ms <= ms) {
-          handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen);
-          bi++;
-        }
+        advance((player.currentTime || 0) * 1000);
       }, 60);
 
       player.play();
