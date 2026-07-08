@@ -13,6 +13,7 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { usePalette } from '../lib/theme';
 import { splitHighlight } from '../lib/highlight';
+import { clamp01, indexToPct, pctToIndex } from '../lib/scrub';
 import { usePlayer } from '../store/player';
 import { useLibrary } from '../store/library';
 import { useSettings } from '../store/settings';
@@ -32,6 +33,9 @@ export default function PlayerScreen({ route, navigation }: Props) {
   const loadSentences = useLibrary((s) => s.loadSentences);
   const docs = useLibrary((s) => s.docs);
   const [loading, setLoading] = useState(true);
+  // 진행 바 스크럽 상태: 드래그 중인 목표 위치(0..1). null = 드래그 아님(실제 진행률 표시).
+  const [scrub, setScrub] = useState<number | null>(null);
+  const [trackW, setTrackW] = useState(0);
 
   // 문서 로드
   useEffect(() => {
@@ -103,6 +107,17 @@ export default function PlayerScreen({ route, navigation }: Props) {
     Platform.OS === 'ios'
       ? [0.5, 1.0, 1.5, 2.0]
       : [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0];
+
+  // ── 진행 바 시킹: 탭/드래그로 문장 위치 이동(2026-07-08 사용자 요청) ─────────
+  // 표시와 시킹은 반드시 같은 위치 공식(lib/scrub.ts) — 다르면 놓는 순간 바가 튄다.
+  const pctFromX = (x: number) => (trackW > 0 ? clamp01(x / trackW) : 0);
+  const onScrubEnd = (pct: number) => {
+    setScrub(null);
+    if (sentences.length) player.seek(pctToIndex(pct, sentences.length));
+  };
+  // 표시 진행률: 드래그 중엔 손가락 위치, 평소엔 실제 진행.
+  const progressPct = indexToPct(index, sentences.length);
+  const fillPct = scrub ?? progressPct;
   const cycleRate = () => {
     // 현재 속도보다 큰 첫 프리셋으로 이동, 없으면 처음으로 순환.
     // (설정 스테퍼로 만든 프리셋 밖 값 0.5·1.75·4.75 등에서도 0.75로 급락하지 않음)
@@ -136,6 +151,7 @@ export default function PlayerScreen({ route, navigation }: Props) {
         </TouchableOpacity>
         <Text style={[styles.count, { color: p.subtext }]}>
           {sentences.length ? index + 1 : 0} / {sentences.length}
+          {sentences.length ? ` (${Math.round(progressPct * 100)}%)` : ''}
         </Text>
       </View>
 
@@ -183,16 +199,34 @@ export default function PlayerScreen({ route, navigation }: Props) {
         </View>
       )}
 
-      {/* 진행 바 */}
-      <View style={[styles.track, { backgroundColor: p.border }]}>
+      {/* 진행 바 — 탭/드래그로 원하는 위치(문장)로 이동. 드래그 중엔 목표 %·문장 번호 표시. */}
+      {scrub != null && (
+        <View style={styles.scrubBadgeRow} pointerEvents="none">
+          <View style={[styles.scrubBadge, { backgroundColor: p.primary }]}>
+            <Text style={[styles.scrubBadgeText, { color: p.onPrimary }]}>
+              {Math.round(scrub * 100)}% · {pctToIndex(scrub, sentences.length) + 1}번째 문장
+            </Text>
+          </View>
+        </View>
+      )}
+      <View
+        style={styles.trackTouch}
+        onLayout={(e) => setTrackW(e.nativeEvent.layout.width)}
+        onStartShouldSetResponder={() => true}
+        onMoveShouldSetResponder={() => true}
+        onResponderGrant={(e) => setScrub(pctFromX(e.nativeEvent.locationX))}
+        onResponderMove={(e) => setScrub(pctFromX(e.nativeEvent.locationX))}
+        onResponderRelease={(e) => onScrubEnd(pctFromX(e.nativeEvent.locationX))}
+        onResponderTerminate={() => setScrub(null)}
+        accessibilityRole="adjustable"
+        accessibilityLabel="진행 위치. 좌우로 끌거나 탭해서 이동"
+      >
+        <View style={[styles.track, { backgroundColor: p.border }]} pointerEvents="none">
+          <View style={[styles.fill, { backgroundColor: p.primary, width: `${fillPct * 100}%` }]} />
+        </View>
         <View
-          style={[
-            styles.fill,
-            {
-              backgroundColor: p.primary,
-              width: `${sentences.length ? ((index + 1) / sentences.length) * 100 : 0}%`,
-            },
-          ]}
+          style={[styles.thumb, { backgroundColor: p.primary, left: `${fillPct * 100}%` }]}
+          pointerEvents="none"
         />
       </View>
 
@@ -272,8 +306,22 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   noticeText: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
-  track: { height: 5, marginHorizontal: 20, borderRadius: 3, overflow: 'hidden' },
-  fill: { height: 5, borderRadius: 3 },
+  // 터치 영역은 넉넉히(높이 32), 시각적 바는 그 안에 6px — 손가락으로 잡기 쉽게.
+  trackTouch: { height: 32, marginHorizontal: 20, justifyContent: 'center' },
+  track: { height: 6, borderRadius: 3, overflow: 'hidden' },
+  fill: { height: 6, borderRadius: 3 },
+  thumb: {
+    position: 'absolute',
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    marginLeft: -7,
+    top: 9,
+    elevation: 2,
+  },
+  scrubBadgeRow: { alignItems: 'center', marginBottom: 6 },
+  scrubBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14 },
+  scrubBadgeText: { fontSize: 13, fontWeight: '700' },
   controls: {
     flexDirection: 'row',
     alignItems: 'center',

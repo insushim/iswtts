@@ -27,7 +27,22 @@ type Word = { text: string; offsetMs: number };
 type Boundary = { ms: number; charIndex: number; charLen: number };
 type Synth = { uri: string; boundaries: Boundary[] };
 type SynthState = { cancelled: boolean; ws: WebSocket | null; uri: string | null };
-type CacheEntry = { promise: Promise<Synth>; cancel: () => void };
+// player: 합성 완료 시 미리 생성·prepare·배속 적용해 둔 재생기(프리로드) — 문장 전환이 play()
+// 한 번으로 끝나 시작 지연이 사라진다. disposed: cancel 이후 뒤늦은 프리로드 생성 차단.
+type CacheEntry = {
+  promise: Promise<Synth>;
+  cancel: () => void;
+  player?: AudioPlayer;
+  disposed?: boolean;
+};
+
+// 프리로드된(아직 재생 전) 플레이어 해제 — 여러 경합 지점에서 부르므로 멱등.
+function releasePreload(entry: CacheEntry): void {
+  const p = entry.player;
+  if (!p) return;
+  entry.player = undefined;
+  try { p.remove(); } catch { /* noop */ }
+}
 
 const CONNECT_TIMEOUT_MS = 8000;
 // 연결 후 합성 전체(오디오 수신 완료까지)의 상한. 기존엔 연결 타이머가 끝까지 살아 있어
@@ -73,10 +88,13 @@ export class EdgeTtsEngine implements TtsEngine {
       (synth) => {
         if (this.pendingSynth === entry) this.pendingSynth = null;
         if (myGen !== this.playGen) {
+          releasePreload(entry);
           deleteAsync(synth.uri, { idempotent: true }).catch(() => { /* noop */ });
           return;
         }
-        this.playFile(synth, params, handlers, myGen);
+        const preloaded = entry.player;
+        entry.player = undefined; // 소유권을 재생 쪽으로 이전(이후 cancel이 건드리지 않게)
+        this.playFile(synth, params, handlers, myGen, preloaded);
       },
       (err) => {
         if (this.pendingSynth === entry) this.pendingSynth = null;
@@ -92,12 +110,36 @@ export class EdgeTtsEngine implements TtsEngine {
     if (!cacheDirectory) return;
     const key = this.keyOf(text, params);
     if (this.cache.has(key)) return;
-    const entry = this.makeSynth(text, params);
+    const base = this.makeSynth(text, params);
+    // cancel 확장: 프리로드된 플레이어까지 함께 해제(축출·정지 시 네이티브 자원 누수 방지).
+    const entry: CacheEntry = {
+      promise: base.promise,
+      cancel: () => {
+        entry.disposed = true;
+        releasePreload(entry);
+        base.cancel();
+      },
+    };
     // 실패한 선행합성은 캐시에서 즉시 제거 — 남겨두면 일시적 네트워크 오류가
     // 소비 시점의 무조건 폴백으로 굳어진다(재시도 기회 박탈). unhandled rejection 방지 겸용.
     entry.promise.catch(() => {
       if (this.cache.get(key) === entry) this.cache.delete(key);
     });
+    // 프리로드: 합성이 끝나는 즉시 플레이어 생성(+prepare)·배속 적용까지 마쳐 둔다.
+    // 문장 전환 때 하던 이 작업(수십~수백 ms)이 문장 시작의 "머뭇거림"이었다(2026-07-08).
+    // 이 .then은 speak의 소비 .then보다 먼저 등록돼 항상 먼저 실행된다(등록 순서 보장).
+    entry.promise
+      .then((synth) => {
+        if (entry.disposed || entry.player) return;
+        try {
+          const p = createAudioPlayer(synth.uri, { updateInterval: STATUS_UPDATE_MS });
+          try { (p as any).shouldCorrectPitch = true; } catch { /* noop */ }
+          try { p.setPlaybackRate(edgePlaybackRate(params.rate)); } catch { /* noop */ }
+          // 이 콜백은 전부 동기라 disposed 체크(위)와 대입 사이에 cancel이 끼어들 수 없다.
+          entry.player = p;
+        } catch { /* 프리로드 실패는 무해 — 재생 시점에 새로 만든다 */ }
+      })
+      .catch(() => { /* 합성 실패는 위 catch가 처리 */ });
     this.cache.set(key, entry);
     this.evict();
   }
@@ -281,17 +323,24 @@ export class EdgeTtsEngine implements TtsEngine {
     return { uri, boundaries: this.mapBoundaries(text, words) };
   }
 
-  private playFile(synth: Synth, params: SpeakParams, handlers: SpeakHandlers, myGen: number): void {
+  private playFile(
+    synth: Synth,
+    params: SpeakParams,
+    handlers: SpeakHandlers,
+    myGen: number,
+    preloaded?: AudioPlayer,
+  ): void {
     try {
       this.currentUri = synth.uri;
       const boundaries = synth.boundaries;
       let bi = 0;
 
-      const player = createAudioPlayer(synth.uri, { updateInterval: STATUS_UPDATE_MS });
+      // 프리로드된 플레이어가 있으면 그대로 재생(생성·prepare 생략 → 문장 시작 즉시).
+      const player = preloaded ?? createAudioPlayer(synth.uri, { updateInterval: STATUS_UPDATE_MS });
       this.player = player;
       try { (player as any).shouldCorrectPitch = true; } catch { /* noop */ }
-      const pr = edgePlaybackRate(params.rate);
-      if (pr !== 1) { try { player.setPlaybackRate(pr); } catch { /* noop */ } }
+      // 배속은 항상 재적용(프리로드 시점과 설정이 달라졌을 수 있음 — 1 로 되돌리는 경우 포함).
+      try { player.setPlaybackRate(edgePlaybackRate(params.rate)); } catch { /* noop */ }
 
       // 하이라이트 전진 — JS 타이머(포그라운드, 60ms)와 네이티브 상태 이벤트(PiP에서도 도착)
       // 양쪽에서 부른다. bi 단조 증가라 두 경로가 겹쳐도 중복 없음.
