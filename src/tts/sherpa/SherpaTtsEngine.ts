@@ -9,6 +9,8 @@ import { disposePlayer } from '../disposePlayer';
 import { compressSilence, trimEdgeSilence } from './smartSpeed';
 import { estimateWordBoundaries, type WordBoundary } from './align';
 import { recordSynth, recordStarvation, recordPlaybackProgress } from './stats';
+import { subtitlesVisible, onVisibilityChange } from '../../lib/visibility';
+import { downsampleHalf, shouldHalve } from './resample';
 
 // trimFactor: 스마트 스피드(무음 압축)로 이미 번 배속(미압축=1) — 재생속도에서 이만큼 덜어낸다.
 type Synth = { uri: string; boundaries: WordBoundary[]; trimFactor: number };
@@ -44,7 +46,7 @@ function releasePreload(entry: CacheEntry): void {
 // CPU 스파이크가 겹치는 순간 캐시가 말라 발화 시작이 밀리고, 그 밀림이 문장마다 들쭉날쭉해
 // "속도가 왔다 갔다 + 말이 씹힌다"로 들린다. 버퍼를 깊게 두면 그 지터를 흡수한다.
 // (합성은 체인 직렬이라 동시 CPU 부하는 그대로 1건씩 — 큐만 깊어진다.)
-// 메모리: 44.1kHz float WAV ≈ 1MB/5초 문장 × 8 ≈ 8MB(캐시 디렉토리, cacheSweep 이 정리).
+// 메모리: 22.05kHz WAV(resample.ts 로 절반) ≈ 0.5MB/5초 문장 × 8 ≈ 4MB(cacheSweep 이 정리).
 const MAX_CACHE = 8;
 // 미리 만들어 두는 AudioPlayer 수 상한. 파일 캐시(8)와 달리 플레이어는 네이티브 자원이라
 // 다음 발화 몫만 준비해 둔다(문장 시작 즉시 재생 효과는 1~2개로 이미 다 얻는다).
@@ -84,6 +86,9 @@ export class SherpaTtsEngine implements TtsEngine {
   private player: AudioPlayer | null = null;
   private poll: ReturnType<typeof setInterval> | null = null;
   private statusSub: { remove: () => void } | null = null;
+  // 화면 켜짐/꺼짐 구독 해제자 — teardown 에서 반드시 끊는다(안 끊으면 죽은 플레이어의
+  // 폴링을 되살리려 하고, 발화마다 구독이 쌓인다).
+  private visSub: (() => void) | null = null;
   private currentUri: string | null = null;
   private pendingSynth: CacheEntry | null = null;
   private cache = new Map<string, CacheEntry>();
@@ -341,6 +346,7 @@ export class SherpaTtsEngine implements TtsEngine {
       this.pendingSynth = null;
     }
     if (this.poll) { clearInterval(this.poll); this.poll = null; }
+    if (this.visSub) { try { this.visSub(); } catch { /* noop */ } this.visSub = null; }
     if (this.statusSub) { try { this.statusSub.remove(); } catch { /* noop */ } this.statusSub = null; }
     if (this.player) { const p = this.player; this.player = null; disposePlayer(p); }
     this.currentModelSpeed = null;
@@ -394,6 +400,13 @@ export class SherpaTtsEngine implements TtsEngine {
     if (state.cancelled) throw new Error('cancelled');
     if (!audio.samples?.length) throw new Error('오프라인 음성 합성 실패(빈 오디오)');
 
+    // 다운샘플 먼저(resample.ts): 44.1kHz → 22.05kHz. 이 뒤의 모든 단계(무음 분석·트림·정렬·
+    // WAV 브릿지 전송·파일 쓰기)와 재생 단계(디코딩·Sonic 스트레치)가 전부 절반 비용이 된다.
+    // 명료도 손실 0(Whisper CER 실측 44.1k 0.0% → 22.05k 0.0%, 2026-07-14).
+    const halve = shouldHalve(audio.sampleRate);
+    const rawSamples: ArrayLike<number> = halve ? downsampleHalf(audio.samples) : audio.samples;
+    const sampleRate = halve ? Math.round(audio.sampleRate / 2) : audio.sampleRate;
+
     // 무음 처리(smartSpeed.ts):
     // - ≤3×: 앞뒤 무음만 트림(말소리·내부 쉼 불변, 속도 보상 없음) — Supertonic 이 문장마다
     //   박는 앞 ~0.4s·뒤 ~0.5s 죽은 공기가 "문장 전환 텀"의 주범(실측 2026-07-07).
@@ -401,15 +414,15 @@ export class SherpaTtsEngine implements TtsEngine {
     let samples: number[];
     let trimFactor = 1;
     if (sherpaTrimEnabled(params.rate)) {
-      const c = compressSilence(audio.samples, audio.sampleRate);
+      const c = compressSilence(rawSamples, sampleRate);
       samples = c.samples;
       trimFactor = c.factor;
     } else {
-      samples = trimEdgeSilence(audio.samples, audio.sampleRate);
+      samples = trimEdgeSilence(rawSamples, sampleRate);
     }
     // 단어 하이라이트: 최종(트림 후) 샘플에서 발화 구간 위에만 글자수 비례 분배 — 쉼 동안
     // 하이라이트가 전진하지 않고, 무음 오프셋 오차가 원천 제거된다.
-    const boundaries = estimateWordBoundaries(text, samples, audio.sampleRate);
+    const boundaries = estimateWordBoundaries(text, samples, sampleRate);
     if (state.cancelled) throw new Error('cancelled');
 
     // 네이티브 WAV 저장은 file:// 없는 절대경로, expo-audio 재생은 file:// URI.
@@ -463,12 +476,57 @@ export class SherpaTtsEngine implements TtsEngine {
 
       // 하이라이트 전진 — JS 타이머(포그라운드, 60ms)와 네이티브 상태 이벤트(PiP에서도 도착)
       // 양쪽에서 부른다. bi 단조 증가라 두 경로가 겹쳐도 중복 없음.
+      //
+      // 화면이 꺼져 있으면(자막을 볼 사람이 없으면) 커서만 조용히 전진시키고 onBoundary 는
+      // 부르지 않는다 — 그 호출 하나하나가 zustand set → React 리렌더라 배터리를 태운다.
+      // bi 는 계속 밀어 두므로 화면이 켜지는 순간 이미 맞는 위치에서 하이라이트가 재개된다
+      // (2026-07-14 사용자 보고 "배터리를 엄청 먹네").
       const advance = (ms: number) => {
+        const notify = subtitlesVisible();
         while (bi < boundaries.length && boundaries[bi].ms <= ms) {
-          handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen);
+          if (notify) handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen);
           bi++;
         }
       };
+
+      // 화면 복귀 시 하이라이트를 "지금 읽고 있는 단어"로 즉시 되돌린다.
+      // ⚠️ advance() 만으로는 안 된다: 화면이 꺼진 동안에도 커서(bi)는 계속 전진했으므로
+      // 복귀 시점엔 이미 현재 위치를 통과해 있어 while 조건이 거짓 → onBoundary 가 한 번도
+      // 안 불리고, 하이라이트가 화면 꺼지던 순간의 단어에 멈춘 채 다음 단어까지 방치된다
+      // (교차검증 발견 2026-07-14). 마지막으로 통과한 경계를 강제로 다시 통지한다.
+      const resync = () => {
+        if (bi > 0 && bi <= boundaries.length) {
+          const b = boundaries[bi - 1];
+          handlers.onBoundary?.(b.charIndex, b.charLen);
+        }
+      };
+
+      // 60ms 폴링은 자막이 보일 때만 돈다. 화면이 꺼지면 타이머를 아예 없애 CPU 를 깨우지
+      // 않는다(초당 16.7회 JS 깨움 → 0). 오디오·문장 진행은 네이티브 상태 이벤트가 계속 몰고
+      // 가므로 낭독은 그대로 이어진다.
+      const startPoll = () => {
+        if (this.poll) return;
+        this.poll = setInterval(() => {
+          if (myGen !== this.playGen || this.player !== player) return;
+          advance((player.currentTime || 0) * 1000);
+        }, 60);
+      };
+      const stopPoll = () => {
+        if (!this.poll) return;
+        clearInterval(this.poll);
+        this.poll = null;
+      };
+      this.visSub = onVisibilityChange((visible) => {
+        if (myGen !== this.playGen || this.player !== player) return;
+        if (visible) {
+          // 복귀 즉시 현재 위치로 하이라이트를 맞춘다(다음 단어를 기다리지 않게).
+          advance((player.currentTime || 0) * 1000);
+          resync();
+          startPoll();
+        } else {
+          stopPoll();
+        }
+      });
 
       // 재생 진행 감시(stats.ts): 오디오가 벽시계 × 배속만큼 실제로 전진하는지. 전진하지
       // 못한 몫 = 언더런/스톨 = 사용자가 듣는 끊김. "합성이 못 따라감(starved)"과 "재생 자체가
@@ -491,16 +549,19 @@ export class SherpaTtsEngine implements TtsEngine {
         lastPos = posMs;
         advance(posMs);
         if (st?.didJustFinish) {
-          while (bi < boundaries.length) { handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen); bi++; }
+          // 남은 경계를 소진(문장 끝까지 하이라이트). 화면이 꺼져 있으면 커서만 밀고 통지는
+          // 생략 — 보이지도 않는 자막을 문장마다 몰아서 리렌더할 이유가 없다.
+          const notify = subtitlesVisible();
+          while (bi < boundaries.length) {
+            if (notify) handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen);
+            bi++;
+          }
           this.teardownPlayback();
           handlers.onDone?.();
         }
       });
 
-      this.poll = setInterval(() => {
-        if (myGen !== this.playGen || this.player !== player) return;
-        advance((player.currentTime || 0) * 1000);
-      }, 60);
+      if (subtitlesVisible()) startPoll();
 
       player.play();
     } catch (e) {

@@ -25,6 +25,7 @@ import {
   SHERPA_MODEL_MB,
 } from '../lib/sherpaModel';
 import { sherpaStats, type SherpaStats } from '../tts/sherpa/stats';
+import { subtitlesVisible } from '../lib/visibility';
 import { APP_VERSION } from '../lib/config';
 import type { RootStackParamList } from '../../App';
 import type { EngineVoice } from '../tts/TtsEngine';
@@ -61,6 +62,8 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     const tick = () => {
+      // 화면이 꺼진 채 이 화면이 마운트돼 있으면 갱신할 이유가 없다(배터리).
+      if (!subtitlesVisible()) return;
       const st = sherpaStats();
       setDiag(st.synths > 0 ? st : null);
     };

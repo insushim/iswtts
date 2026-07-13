@@ -23,6 +23,7 @@ import {
 import { EDGE_VOICES, defaultEdgeVoice, resolveEdgeVoice } from './voices';
 import { edgeSsmlRatePct, edgePlaybackRate } from './rate';
 import { disposePlayer } from '../disposePlayer';
+import { subtitlesVisible, onVisibilityChange } from '../../lib/visibility';
 
 type Word = { text: string; offsetMs: number };
 type Boundary = { ms: number; charIndex: number; charLen: number };
@@ -70,6 +71,8 @@ export class EdgeTtsEngine implements TtsEngine {
   private player: AudioPlayer | null = null;
   private poll: ReturnType<typeof setInterval> | null = null;
   private statusSub: { remove: () => void } | null = null;
+  // 화면 켜짐/꺼짐 구독 해제자 — teardown 에서 반드시 끊는다(누수 시 발화마다 구독이 쌓인다).
+  private visSub: (() => void) | null = null;
   private currentUri: string | null = null;
   // 현재 재생 중 오디오가 어떤 SSML 배속으로 합성됐는지 — setRate 라이브 적용 가능 판정용.
   private currentSsmlPct: string | null = null;
@@ -212,6 +215,7 @@ export class EdgeTtsEngine implements TtsEngine {
     // 아직 재생 안 된 진행 중 합성이 있으면 취소(WS 즉시 종료, 낭비 방지).
     if (this.pendingSynth) { this.pendingSynth.cancel(); this.pendingSynth = null; }
     if (this.poll) { clearInterval(this.poll); this.poll = null; }
+    if (this.visSub) { try { this.visSub(); } catch { /* noop */ } this.visSub = null; }
     if (this.statusSub) { try { this.statusSub.remove(); } catch { /* noop */ } this.statusSub = null; }
     if (this.player) { const p = this.player; this.player = null; disposePlayer(p); }
     this.currentSsmlPct = null;
@@ -363,10 +367,23 @@ export class EdgeTtsEngine implements TtsEngine {
 
       // 하이라이트 전진 — JS 타이머(포그라운드, 60ms)와 네이티브 상태 이벤트(PiP에서도 도착)
       // 양쪽에서 부른다. bi 단조 증가라 두 경로가 겹쳐도 중복 없음.
+      // 화면이 꺼져 있으면 커서만 조용히 밀고 onBoundary(→ 리렌더)는 생략 — 배터리
+      // (visibility.ts, sherpa 엔진과 동일 방침 2026-07-14).
       const advance = (ms: number) => {
+        const notify = subtitlesVisible();
         while (bi < boundaries.length && boundaries[bi].ms <= ms) {
-          handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen);
+          if (notify) handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen);
           bi++;
+        }
+      };
+
+      // 화면 복귀 시 하이라이트를 "지금 읽는 단어"로 즉시 되돌린다. advance() 만으로는 안 된다 —
+      // 화면이 꺼진 동안에도 커서(bi)는 전진했으므로 복귀 시엔 이미 현재 위치를 통과해 있어
+      // onBoundary 가 한 번도 안 불린다(교차검증 발견 2026-07-14).
+      const resync = () => {
+        if (bi > 0 && bi <= boundaries.length) {
+          const b = boundaries[bi - 1];
+          handlers.onBoundary?.(b.charIndex, b.charLen);
         }
       };
 
@@ -375,16 +392,41 @@ export class EdgeTtsEngine implements TtsEngine {
         if (st?.error) { this.teardownPlayback(); handlers.onError?.(new Error('Edge TTS 재생 오류')); return; }
         advance((st?.currentTime || 0) * 1000);
         if (st?.didJustFinish) {
-          while (bi < boundaries.length) { handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen); bi++; }
+          // 화면이 꺼져 있으면 커서만 밀고 통지는 생략(보이지 않는 자막의 몰아치기 리렌더 방지).
+          const notify = subtitlesVisible();
+          while (bi < boundaries.length) {
+            if (notify) handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen);
+            bi++;
+          }
           this.teardownPlayback();
           handlers.onDone?.();
         }
       });
 
-      this.poll = setInterval(() => {
+      // 폴링 타이머는 자막이 보일 때만(화면 꺼짐 = CPU 를 60ms 마다 깨울 이유가 없다).
+      const startPoll = () => {
+        if (this.poll) return;
+        this.poll = setInterval(() => {
+          if (myGen !== this.playGen || this.player !== player) return;
+          advance((player.currentTime || 0) * 1000);
+        }, 60);
+      };
+      const stopPoll = () => {
+        if (!this.poll) return;
+        clearInterval(this.poll);
+        this.poll = null;
+      };
+      this.visSub = onVisibilityChange((visible) => {
         if (myGen !== this.playGen || this.player !== player) return;
-        advance((player.currentTime || 0) * 1000);
-      }, 60);
+        if (visible) {
+          advance((player.currentTime || 0) * 1000); // 복귀 즉시 위치 맞춤
+          resync();
+          startPoll();
+        } else {
+          stopPoll();
+        }
+      });
+      if (subtitlesVisible()) startPoll();
 
       player.play();
     } catch (e) {

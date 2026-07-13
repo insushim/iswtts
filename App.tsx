@@ -17,6 +17,7 @@ import { sweepCache } from './src/lib/cacheSweep';
 import { configureAudioSession } from './src/lib/mediaSession';
 import { installCrashLogger, readLastCrash, clearLastCrash } from './src/lib/crashLog';
 import { APP_VERSION } from './src/lib/config';
+import { initVisibility, setPipVisible } from './src/lib/visibility';
 
 // JS 치명 오류를 기기 파일로 남기는 로컬 크래시 로거(외부 전송 없음). 최대한 이른 시점에 설치.
 installCrashLogger(APP_VERSION);
@@ -53,6 +54,13 @@ export default function App() {
     }, 1500);
     return () => clearTimeout(t);
   }, []);
+
+  // 자막이 실제로 보이는지(포그라운드 또는 PiP)를 엔진에 알린다 — 화면이 꺼져 있으면 엔진이
+  // 하이라이트 폴링·리렌더를 멈춰 배터리를 아낀다(visibility.ts). 낭독 자체는 계속된다.
+  useEffect(() => initVisibility(), []);
+  useEffect(() => {
+    setPipVisible(isInPipMode);
+  }, [isInPipMode]);
 
   // 재생 중일 때만 홈 버튼 시 자동으로 작은 창(PiP)으로 전환(Android 12+). 정지 시엔 일반 홈 동작.
   useEffect(() => {
