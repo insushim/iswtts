@@ -8,6 +8,7 @@ import { sherpaModelSpeed, sherpaPlaybackRate, sherpaTrimEnabled } from './rate'
 import { disposePlayer } from '../disposePlayer';
 import { compressSilence, trimEdgeSilence } from './smartSpeed';
 import { estimateWordBoundaries, type WordBoundary } from './align';
+import { recordSynth, recordStarvation, recordPlaybackProgress } from './stats';
 
 // trimFactor: 스마트 스피드(무음 압축)로 이미 번 배속(미압축=1) — 재생속도에서 이만큼 덜어낸다.
 type Synth = { uri: string; boundaries: WordBoundary[]; trimFactor: number };
@@ -19,6 +20,10 @@ type CacheEntry = {
   cancel: () => void;
   player?: AudioPlayer;
   disposed?: boolean;
+  // 합성 결과(완료 시). 프리로드 슬롯이 나중에 비었을 때 재시도하려면 결과를 들고 있어야 한다.
+  synth?: Synth;
+  // 프리로드 플레이어 생성(멱등 — 이미 있거나 상한이면 no-op). prefetch 가 채운다.
+  preload?: (synth: Synth) => void;
 };
 
 // 프리로드된(아직 재생 전) 플레이어 해제 — 여러 경합 지점에서 부르므로 멱등.
@@ -33,9 +38,17 @@ function releasePreload(entry: CacheEntry): void {
 // (v1.6.2 의 "전부 모델 speed" 방침은 Whisper CER 실측으로 폐기: 모델 2.0=CER72%, 3.0=82%
 //  — "2배속부터 씹힘"의 근본원인. 재생속도 2.0=CER10% 로 온전. 과거 "setPlaybackRate 기기별
 //  무음" 보고는 당시 모델 speed≥4 무음과 뒤섞인 미확정 귀속 — 재발 시 이 줄에 실측 기록할 것.)
-// 재생 중 유닛 1 + 선행 합성 3(player.ts PREFETCH_UNITS) — 배속에서 파이프라인이 마르지 않는 깊이.
-// (합성은 체인 직렬이라 동시 부하는 그대로 1건씩 — 큐만 깊어진다.)
-const MAX_CACHE = 4;
+// 선행 합성 버퍼 깊이(파일). 재생 중 유닛 1 + 선행 6(player.ts PREFETCH_UNITS)보다 크게.
+// 왜 깊은가(2026-07-13 실측): 합성 RTF 는 맥 M-series 에서 0.11~0.34, 안드로이드 중급기면
+// 그 5~10배 → 1.5× 재생이 요구하는 예산(RTF<0.67)에 아슬아슬하게 걸친다. 문장 길이 편차와
+// CPU 스파이크가 겹치는 순간 캐시가 말라 발화 시작이 밀리고, 그 밀림이 문장마다 들쭉날쭉해
+// "속도가 왔다 갔다 + 말이 씹힌다"로 들린다. 버퍼를 깊게 두면 그 지터를 흡수한다.
+// (합성은 체인 직렬이라 동시 CPU 부하는 그대로 1건씩 — 큐만 깊어진다.)
+// 메모리: 44.1kHz float WAV ≈ 1MB/5초 문장 × 8 ≈ 8MB(캐시 디렉토리, cacheSweep 이 정리).
+const MAX_CACHE = 8;
+// 미리 만들어 두는 AudioPlayer 수 상한. 파일 캐시(8)와 달리 플레이어는 네이티브 자원이라
+// 다음 발화 몫만 준비해 둔다(문장 시작 즉시 재생 효과는 1~2개로 이미 다 얻는다).
+const MAX_PRELOAD = 2;
 // 네이티브 상태 이벤트 주기(ms). PiP에선 JS 타이머가 얼어붙어 이 이벤트만이 자막을 움직인다.
 const STATUS_UPDATE_MS = 80;
 // 합성 1건 상한(첫 호출의 모델 로드 포함). 네이티브 hang 시 직렬화 체인 전체가 영구
@@ -87,10 +100,14 @@ export class SherpaTtsEngine implements TtsEngine {
     if (entry) this.cache.delete(key); // 소비: 파일 소유권을 재생 쪽으로 이전
     else entry = this.makeSynth(text, params);
     this.pendingSynth = entry;
+    // 발화 시작까지 실제로 기다린 시간 = 파이프라인이 말랐는지의 직접 증거(stats.ts).
+    // 캐시 히트(합성 완료분)면 0 에 수렴하고, 마르면 그 대기가 곧 낭독 리듬의 흔들림이다.
+    const askedAt = Date.now();
 
     entry.promise.then(
       (synth) => {
         if (this.pendingSynth === entry) this.pendingSynth = null;
+        if (myGen === this.playGen) recordStarvation(Date.now() - askedAt, Date.now());
         if (myGen !== this.playGen) {
           releasePreload(entry);
           deleteAsync(synth.uri, { idempotent: true }).catch(() => { /* noop */ });
@@ -99,6 +116,8 @@ export class SherpaTtsEngine implements TtsEngine {
         const preloaded = entry.player;
         entry.player = undefined; // 소유권을 재생 쪽으로 이전(이후 cancel이 건드리지 않게)
         this.playFile(synth, params, handlers, myGen, preloaded);
+        // 방금 슬롯이 하나 비었다 — 상한에 걸려 못 만든 다음 발화의 플레이어를 지금 만든다.
+        this.topUpPreload();
       },
       (err) => {
         if (this.pendingSynth === entry) this.pendingSynth = null;
@@ -113,7 +132,15 @@ export class SherpaTtsEngine implements TtsEngine {
   prefetch(text: string, params: SpeakParams): void {
     if (!cacheDirectory) return;
     const key = this.keyOf(text, params);
-    if (this.cache.has(key)) return;
+    // 이미 있는 항목은 재합성하지 않되, "방금 다시 요청됐다"는 사실로 축출 우선순위를 되살린다
+    // (Map 재삽입 = 최신 순서). 안 하면 뒤로 seek 했을 때 FIFO 가 정작 바로 다음에 재생될
+    // 문장을 먼저 취소해, 온디맨드 재합성 + 발화 대기가 되살아난다(교차검증 지적 2026-07-13).
+    const hit = this.cache.get(key);
+    if (hit) {
+      this.cache.delete(key);
+      this.cache.set(key, hit);
+      return;
+    }
     const base = this.makeSynth(text, params);
     // cancel 확장: 프리로드된 플레이어까지 함께 해제(축출·정지 시 네이티브 자원 누수 방지).
     const entry: CacheEntry = {
@@ -131,20 +158,41 @@ export class SherpaTtsEngine implements TtsEngine {
     // 프리로드: 합성이 끝나는 즉시 플레이어 생성(+prepare)·배속 적용까지 마쳐 둔다.
     // 문장 전환 때 하던 이 작업(수십~수백 ms)이 문장 시작의 "머뭇거림"이었다(2026-07-08).
     // 이 .then은 speak의 소비 .then보다 먼저 등록돼 항상 먼저 실행된다(등록 순서 보장).
+    //
+    // 플레이어는 네이티브 자원이라 앞쪽 MAX_PRELOAD 건만 만든다(파일 버퍼는 깊게, 플레이어는
+    // 얕게). 상한에 걸려 못 만든 엔트리는 재생이 앞 문장을 소비해 슬롯이 비는 즉시
+    // topUpPreload()가 다시 시도한다 — 없으면 3번째 이후 문장은 캐시에 파일이 있어도 재생
+    // 시점에 createAudioPlayer 를 동기로 만들어야 해서 버퍼를 깊게 잡은 효과가 반감된다
+    // (교차검증 지적 2026-07-13).
+    entry.preload = (synth: Synth) => {
+      if (entry.disposed || entry.player) return;
+      if (this.preloadedCount() >= MAX_PRELOAD) return;
+      try {
+        const p = createAudioPlayer(synth.uri, { updateInterval: STATUS_UPDATE_MS });
+        try { (p as any).shouldCorrectPitch = true; } catch { /* noop */ }
+        try { p.setPlaybackRate(sherpaPlaybackRate(params.rate, synth.trimFactor)); } catch { /* noop */ }
+        // 이 함수는 전부 동기라 disposed 체크(위)와 대입 사이에 cancel이 끼어들 수 없다.
+        entry.player = p;
+      } catch { /* 프리로드 실패는 무해 — 재생 시점에 새로 만든다 */ }
+    };
     entry.promise
       .then((synth) => {
-        if (entry.disposed || entry.player) return;
-        try {
-          const p = createAudioPlayer(synth.uri, { updateInterval: STATUS_UPDATE_MS });
-          try { (p as any).shouldCorrectPitch = true; } catch { /* noop */ }
-          try { p.setPlaybackRate(sherpaPlaybackRate(params.rate, synth.trimFactor)); } catch { /* noop */ }
-          // 이 콜백은 전부 동기라 disposed 체크(위)와 대입 사이에 cancel이 끼어들 수 없다.
-          entry.player = p;
-        } catch { /* 프리로드 실패는 무해 — 재생 시점에 새로 만든다 */ }
+        entry.synth = synth; // 나중(슬롯이 빌 때)의 재시도용
+        entry.preload?.(synth);
       })
       .catch(() => { /* 합성 실패는 위 catch가 처리 */ });
     this.cache.set(key, entry);
     this.evict();
+  }
+
+  // 프리로드 슬롯이 빈 만큼(재생이 앞 문장을 소비) 캐시 앞쪽부터 플레이어를 채운다.
+  // 합성이 끝나 있는 엔트리만 대상 — 아직 합성 중이면 그 엔트리의 .then 이 알아서 만든다.
+  private topUpPreload(): void {
+    if (this.preloadedCount() >= MAX_PRELOAD) return;
+    for (const e of this.cache.values()) {
+      if (this.preloadedCount() >= MAX_PRELOAD) return;
+      if (!e.player && e.synth && !e.disposed) e.preload?.(e.synth);
+    }
   }
 
   stop(): void {
@@ -217,6 +265,10 @@ export class SherpaTtsEngine implements TtsEngine {
     this.initPromise = (async () => {
       const path = await sherpaModelPath();
       if (!path) throw new Error('오프라인 음성 모델이 설치되지 않았습니다.');
+      // numThreads=2 가 최적(맥 M-series 실측 2026-07-13, 같은 5문장 합성 RTF):
+      //   1스레드 0.192 / 2스레드 0.108 / 4스레드 0.113 / 6스레드 0.147
+      // 2 를 넘기면 스레드 동기화 비용이 이득을 먹는다 — 늘려도 합성이 빨라지지 않으므로
+      // "느리니 스레드를 더 주자"는 유혹을 여기서 차단한다(코어만 더 뺏겨 재생이 손해).
       const n = await createTTS({
         modelPath: { type: 'file', path },
         modelType: 'supertonic',
@@ -260,6 +312,12 @@ export class SherpaTtsEngine implements TtsEngine {
       () => this.synthesize(text, params, state),
     )) as Promise<Synth>;
     return { promise, cancel };
+  }
+
+  private preloadedCount(): number {
+    let n = 0;
+    for (const e of this.cache.values()) if (e.player) n++;
+    return n;
   }
 
   private evict(): void {
@@ -317,6 +375,8 @@ export class SherpaTtsEngine implements TtsEngine {
     if (state.cancelled) throw new Error('cancelled');
     const native = await this.ensureNative();
     if (state.cancelled) throw new Error('cancelled');
+    // 모델 로드(첫 1회)는 합성 비용이 아니므로 계측 시작은 여기부터.
+    const synthStart = Date.now();
 
     // ⚠️ generateSpeech 로 바꾸지 말 것: 그 경로의 일반 모델 분기는 네이티브에서
     // dispatchGenerate(text, sid, speed)로 options(extra.lang)를 통째로 버린다(소스 실측
@@ -364,6 +424,14 @@ export class SherpaTtsEngine implements TtsEngine {
       throw new Error('cancelled');
     }
     state.uri = uri;
+    // RTF = 발화 1건을 "재생 가능한 상태"로 만드는 데 든 시간 ÷ 그 파일이 실제로 재생될 길이.
+    // ⚠️ 분자는 네이티브 합성만이 아니라 무음 트림·단어 정렬·WAV 저장(25만 float 을 브릿지로
+    // 넘기는 동기 마샬링)까지 포함한다 — 파이프라인이 마르는지를 결정하는 건 이 전체 비용이다.
+    // ⚠️ 분모는 반드시 "트림 후" 길이(= 실제 재생 시간)여야 한다. 트림 전 원본 길이를 쓰면
+    //    문장마다 앞뒤 무음(~0.9s)만큼 분모가 부풀어 RTF 가 낙관적으로 기록되고, 못 따라가는
+    //    기기를 정상으로 오판한다(교차검증 지적 2026-07-13 — 계측을 저장 뒤로 옮기며 유입됨).
+    // 불변식: rtf × 설정배속 ≥ 1 이면 재생이 준비를 앞질러 캐시가 마른다.
+    recordSynth(Date.now() - synthStart, (samples.length / audio.sampleRate) * 1000);
     return { uri, boundaries, trimFactor };
   }
 
@@ -402,10 +470,26 @@ export class SherpaTtsEngine implements TtsEngine {
         }
       };
 
+      // 재생 진행 감시(stats.ts): 오디오가 벽시계 × 배속만큼 실제로 전진하는지. 전진하지
+      // 못한 몫 = 언더런/스톨 = 사용자가 듣는 끊김. "합성이 못 따라감(starved)"과 "재생 자체가
+      // 끊김(stall)" 중 어느 쪽인지를 이 두 수치가 가른다(교차검증 지적 2026-07-13 — 계측이
+      // 합성 쪽만 보면 반대 가설을 배제하지 못한다).
+      const playRate = sherpaPlaybackRate(params.rate, synth.trimFactor);
+      let lastWall = 0;
+      let lastPos = 0;
+
       this.statusSub = player.addListener('playbackStatusUpdate', (st: any) => {
         if (myGen !== this.playGen || this.player !== player) return;
         if (st?.error) { this.teardownPlayback(); handlers.onError?.(new Error('오프라인 음성 재생 오류')); return; }
-        advance((st?.currentTime || 0) * 1000);
+        const posMs = (st?.currentTime || 0) * 1000;
+        const now = Date.now();
+        if (st?.playing && lastWall > 0) {
+          recordPlaybackProgress(now - lastWall, posMs - lastPos, playRate);
+        }
+        // 일시정지 구간은 벽시계만 흐르므로 기준점을 리셋(정지를 끊김으로 세지 않게).
+        lastWall = st?.playing ? now : 0;
+        lastPos = posMs;
+        advance(posMs);
         if (st?.didJustFinish) {
           while (bi < boundaries.length) { handlers.onBoundary?.(boundaries[bi].charIndex, boundaries[bi].charLen); bi++; }
           this.teardownPlayback();

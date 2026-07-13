@@ -110,22 +110,23 @@ export function edgeSilenceCuts(samples: ArrayLike<number>, sampleRate: number):
 }
 
 // 앞뒤 무음 트림 적용(≤3× 경로 — 속도 보상 없음: 죽은 공기 제거일 뿐 말소리 속도는 불변).
+//
+// 컷은 앞·뒤 최대 2개뿐이라 결과는 언제나 연속 구간 하나 = slice 한 번. 요소별 복사 루프를
+// 쓰지 않는 이유(2026-07-13): 문장 하나가 44.1kHz × 5초 ≈ 25만 샘플이고, 이 함수는 재생
+// 중에 선행 합성마다 돌아 JS 스레드를 잡는다. 그 점유가 오디오·자막을 밀어낸다.
 export function trimEdgeSilence(samples: ArrayLike<number>, sampleRate: number): number[] {
-  const cuts = edgeSilenceCuts(samples, sampleRate);
-  if (!cuts.length) return Array.from(samples);
   const n = samples.length;
-  let removed = 0;
-  for (const c of cuts) removed += c.end - c.start;
-  if (removed >= n) return Array.from(samples); // 전체 무음 — 원본 유지(compressSilence 와 동일 방침)
-  const out = new Array<number>(n - removed);
-  let w = 0;
-  let pos = 0;
+  const cuts = edgeSilenceCuts(samples, sampleRate);
+  let start = 0;
+  let end = n;
   for (const c of cuts) {
-    for (let i = pos; i < c.start; i++) out[w++] = samples[i];
-    pos = c.end;
+    if (c.start === 0) start = Math.max(start, c.end); // 머리 무음
+    if (c.end === n) end = Math.min(end, c.start); // 꼬리 무음
   }
-  for (let i = pos; i < n; i++) out[w++] = samples[i];
-  return out;
+  // 전체 무음(합성 실패 성격) — 빈 오디오를 만들지 말고 원본 유지(compressSilence 와 동일 방침).
+  if (end <= start) return Array.from(samples);
+  if (start === 0 && end === n) return Array.from(samples);
+  return Array.prototype.slice.call(samples, start, end) as number[];
 }
 
 export function compressSilence(samples: ArrayLike<number>, sampleRate: number): CompressedAudio {

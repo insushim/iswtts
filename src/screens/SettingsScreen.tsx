@@ -24,6 +24,7 @@ import {
   deleteSherpaModel,
   SHERPA_MODEL_MB,
 } from '../lib/sherpaModel';
+import { sherpaStats, type SherpaStats } from '../tts/sherpa/stats';
 import { APP_VERSION } from '../lib/config';
 import type { RootStackParamList } from '../../App';
 import type { EngineVoice } from '../tts/TtsEngine';
@@ -49,8 +50,24 @@ export default function SettingsScreen() {
   const [dlPercent, setDlPercent] = useState(0);
   const [dlPhase, setDlPhase] = useState<'downloading' | 'extracting'>('downloading');
   const [dlError, setDlError] = useState<string | null>(null);
+  // 오프라인 재생 진단(음성 준비 속도·낭독 대기) — 낭독을 한 번이라도 한 뒤에만 표시.
+  // "배속에서 리듬이 흔들린다"가 기기 성능 문제인지 코드 문제인지를 추측 대신 숫자로 가른다.
+  // stats 는 zustand 가 아니라 모듈 싱글턴이라 값이 바뀌어도 리렌더가 걸리지 않는다 —
+  // 재생 중(백그라운드 낭독) 이 화면을 열어 두고 숫자가 움직이는 걸 지켜보는 게 이 기능의
+  // 용도이므로 1초 폴링으로 갱신한다(dlPercent 와 같은 패턴).
+  const [diag, setDiag] = useState<SherpaStats | null>(null);
   const aliveRef = useRef(true);
   const dlDetach = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    const tick = () => {
+      const st = sherpaStats();
+      setDiag(st.synths > 0 ? st : null);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -414,6 +431,14 @@ export default function SettingsScreen() {
           )}
           {dlError && (
             <Text style={{ color: '#e05555', fontSize: 12, marginTop: 6 }}>{dlError}</Text>
+          )}
+          {modelState === 'ready' && diag && (
+            <Text style={{ color: p.subtext, fontSize: 11, lineHeight: 16, marginTop: 8 }}>
+              진단 · 음성 준비 속도 {diag.avgRtf.toFixed(2)} (지금 배속 {s.rate}×에서는{' '}
+              {(1 / s.rate).toFixed(2)} 아래여야 안 끊깁니다)
+              {'\n'}· 다음 문장을 기다린 시간 {(diag.starvedMs / 1000).toFixed(1)}초 ({diag.starved}회)
+              {'\n'}· 재생이 끊긴 시간 {(diag.stallMs / 1000).toFixed(1)}초
+            </Text>
           )}
           {modelState === 'ready' && (
             <TouchableOpacity

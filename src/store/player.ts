@@ -3,6 +3,7 @@ import type { TtsEngine } from '../tts/TtsEngine';
 import { getEngine, systemEngine } from '../tts';
 import { EDGE_MAX_RATE } from '../tts/edge/rate';
 import { SHERPA_QUALITY_MAX } from '../tts/sherpa/rate';
+import { sherpaStats, resetSherpaStats } from '../tts/sherpa/stats';
 import { contrastEdgeVoice } from '../tts/edge/voices';
 import { splitDialogue, type DialogueSegment } from '../lib/dialogue';
 import { useSettings } from './settings';
@@ -122,10 +123,29 @@ function segsOf(sentences: string[]): DialogueSegment[][] {
 
 // Edge 2× 초과 자동 전환 안내는 앱 실행당 1회만(문장마다 배너가 뜨면 소음).
 let highSpeedNoticeShown = false;
+let slowDeviceNoticeShown = false;
 
-// 선행 합성 깊이(발화 유닛 수). 엔진 캐시 상한(MAX_CACHE=4)보다 1 작게 유지해
-// 재생 중 유닛 + 선행 3개가 캐시에서 서로를 밀어내지 않게 한다.
-const PREFETCH_UNITS = 3;
+// 오프라인 합성이 재생 소비를 못 따라가는 상태의 판정(기기 실측 기반 — stats.ts).
+// 조건: 표본이 쌓였고(합성 5건+), 발화 시작 대기가 반복됐고(3회+), 측정된 합성 RTF × 설정
+// 배속이 실시간 예산(1.0)에 붙었다 = 버퍼를 깊게 잡아도 정상상태에서 결국 마른다.
+function maybeWarnSlowDevice(rate: number): void {
+  if (slowDeviceNoticeShown || rate <= 1) return;
+  const st = sherpaStats();
+  if (st.synths < 5 || st.starved < 3) return;
+  if (st.avgRtf * rate < 0.9) return;
+  slowDeviceNoticeShown = true;
+  usePlayer.setState({
+    notice: `이 기기는 ${rate}배속의 오프라인 음성 합성을 실시간으로 따라가지 못해 낭독이 끊길 수 있습니다 — 배속을 낮추거나 설정에서 온라인/기본 음성을 사용해 보세요.`,
+  });
+}
+
+// 선행 합성 깊이(발화 유닛 수). 엔진 캐시 상한(sherpa MAX_CACHE=8)보다 작게 유지해
+// 재생 중 유닛 + 선행분이 캐시에서 서로를 밀어내지 않게 한다.
+// 깊이 6인 이유(2026-07-13): 오프라인 합성은 기기 CPU 에 따라 1.5× 재생 소비를 아슬아슬하게
+// 따라가거나 못 따라간다(합성 RTF 실측 — 맥 0.11, 안드로이드 중급기 추정 0.5~1.1). 깊이 3은
+// 문장 길이 편차·CPU 스파이크 한 번에 말라붙어 발화 시작이 밀렸고, 그 밀림의 편차가 곧
+// "속도가 왔다 갔다"였다. 버퍼를 깊게 잡아 지터를 흡수한다(합성은 직렬이라 CPU 부하는 불변).
+const PREFETCH_UNITS = 6;
 
 export const usePlayer = create<PlayerState>((set, get) => {
   const speakCurrent = () => {
@@ -236,9 +256,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
       });
 
       // 다음 발화 단위들을 미리 합성(문장 간·세그먼트 간 딜레이 제거). 시스템 엔진은 no-op.
-      // 깊이 3유닛: 배속에서는 재생이 합성보다 먼저 끝나 깊이 1로는 파이프라인이 말라붙고,
-      // 그 대기 텀이 문장마다 들쭉날쭉해 낭독 리듬이 무너진다(2026-07-08 사용자 보고 —
-      // "1.5×에서 속도가 일정하지 않다"의 실체). 상한은 엔진 캐시(MAX_CACHE)가 관리.
+      // 깊이는 PREFETCH_UNITS(선언부 주석에 근거) — 상한은 엔진 캐시(MAX_CACHE)가 관리.
+      // 기기가 이 배속의 실시간 합성을 못 따라가면(버퍼를 깊게 잡아도 계속 마름) 그건 코드로
+      // 못 고치는 성능 한계다 — 추측하게 두지 말고 사용자에게 선택지를 알린다(앱 실행당 1회).
+      if (!fellBack && engineId === 'sherpa') maybeWarnSlowDevice(settings.rate);
+
       if (!fellBack) {
         const upcoming: DialogueSegment[] = [];
         for (let k = si + 1; k < segs.length && upcoming.length < PREFETCH_UNITS; k++) {
@@ -270,6 +292,10 @@ export const usePlayer = create<PlayerState>((set, get) => {
     load: ({ docId, title, sentences, startIndex = 0 }) => {
       activeEngine.stop();
       epoch++;
+      // 진단은 "지금 읽는 이 책"의 것이어야 한다 — 앱을 켠 이후 평생 누적이면 오래된 표본이
+      // 현재 기기 상태를 희석한다(교차검증 지적 2026-07-13). 느린 기기 안내도 다시 무장.
+      resetSherpaStats();
+      slowDeviceNoticeShown = false;
       pauseMediaSession(); // 새 문서 준비 — 앵커도 정지 상태로 정렬(재생 시 새 제목으로 재개)
       set({
         docId,
