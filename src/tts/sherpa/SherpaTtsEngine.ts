@@ -10,7 +10,7 @@ import { compressSilence, trimEdgeSilence } from './smartSpeed';
 import { estimateWordBoundaries, type WordBoundary } from './align';
 import { recordSynth, recordStarvation, recordPlaybackProgress } from './stats';
 import { subtitlesVisible, onVisibilityChange } from '../../lib/visibility';
-import { downsampleHalf, shouldHalve } from './resample';
+import { prepareAudio } from './resample';
 
 // trimFactor: 스마트 스피드(무음 압축)로 이미 번 배속(미압축=1) — 재생속도에서 이만큼 덜어낸다.
 type Synth = { uri: string; boundaries: WordBoundary[]; trimFactor: number };
@@ -403,9 +403,9 @@ export class SherpaTtsEngine implements TtsEngine {
     // 다운샘플 먼저(resample.ts): 44.1kHz → 22.05kHz. 이 뒤의 모든 단계(무음 분석·트림·정렬·
     // WAV 브릿지 전송·파일 쓰기)와 재생 단계(디코딩·Sonic 스트레치)가 전부 절반 비용이 된다.
     // 명료도 손실 0(Whisper CER 실측 44.1k 0.0% → 22.05k 0.0%, 2026-07-14).
-    const halve = shouldHalve(audio.sampleRate);
-    const rawSamples: ArrayLike<number> = halve ? downsampleHalf(audio.samples) : audio.samples;
-    const sampleRate = halve ? Math.round(audio.sampleRate / 2) : audio.sampleRate;
+    // 샘플과 레이트는 한 객체로 함께 온다 — 따로 들고 다니다 헤더가 어긋나면 칩멍크가 된다
+    // (v1.17.0 사고. resample.ts 주석 참조).
+    const { samples: rawSamples, sampleRate } = prepareAudio(audio.samples, audio.sampleRate);
 
     // 무음 처리(smartSpeed.ts):
     // - ≤3×: 앞뒤 무음만 트림(말소리·내부 쉼 불변, 속도 보상 없음) — Supertonic 이 문장마다
@@ -430,7 +430,10 @@ export class SherpaTtsEngine implements TtsEngine {
     if (!dir) throw new Error('캐시 디렉토리 없음');
     const name = `sherpa-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.wav`;
     const plainPath = `${dir}${name}`;
-    await saveAudioToFile({ samples, sampleRate: audio.sampleRate }, plainPath);
+    // ⚠️ 반드시 sampleRate(다운샘플 반영값)로 저장할 것. audio.sampleRate(원본 44.1kHz)를 쓰면
+    // 22.05kHz 데이터에 44.1kHz 헤더가 붙어 2배 빠르고 한 옥타브 높은 "칩멍크" 재생이 된다
+    // (v1.17.0 실제 사고 2026-07-14 — 사용자 보고 "목소리가 모두 뱁새처럼 바뀜").
+    await saveAudioToFile({ samples, sampleRate }, plainPath);
     const uri = `file://${plainPath}`;
     if (state.cancelled) {
       deleteAsync(uri, { idempotent: true }).catch(() => { /* noop */ });
@@ -444,7 +447,7 @@ export class SherpaTtsEngine implements TtsEngine {
     //    문장마다 앞뒤 무음(~0.9s)만큼 분모가 부풀어 RTF 가 낙관적으로 기록되고, 못 따라가는
     //    기기를 정상으로 오판한다(교차검증 지적 2026-07-13 — 계측을 저장 뒤로 옮기며 유입됨).
     // 불변식: rtf × 설정배속 ≥ 1 이면 재생이 준비를 앞질러 캐시가 마른다.
-    recordSynth(Date.now() - synthStart, (samples.length / audio.sampleRate) * 1000);
+    recordSynth(Date.now() - synthStart, (samples.length / sampleRate) * 1000);
     return { uri, boundaries, trimFactor };
   }
 

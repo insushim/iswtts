@@ -38,3 +38,18 @@ const MIN_RATE_TO_HALVE = 32_000;
 export function shouldHalve(sampleRate: number): boolean {
   return Number.isFinite(sampleRate) && sampleRate >= MIN_RATE_TO_HALVE;
 }
+
+/**
+ * 샘플과 그 샘플레이트를 **항상 함께** 돌려준다 — 호출부가 둘을 따로 들고 다니지 못하게.
+ *
+ * 왜 이렇게 묶는가(v1.17.0 사고 2026-07-14): 다운샘플은 했는데 WAV 헤더에는 원본 레이트
+ * (44.1kHz)를 적어 넣어, 22.05kHz 오디오가 2배 빠르고 한 옥타브 높게 재생됐다("목소리가
+ * 모두 뱁새처럼 바뀜"). 샘플 배열과 레이트가 따로 다니는 한 이 실수는 언제든 재발한다 —
+ * 한 객체로 묶어 애초에 어긋날 수 없게 만든다.
+ */
+export type Pcm = { samples: ArrayLike<number>; sampleRate: number };
+
+export function prepareAudio(samples: ArrayLike<number>, sampleRate: number): Pcm {
+  if (!shouldHalve(sampleRate)) return { samples, sampleRate };
+  return { samples: downsampleHalf(samples), sampleRate: Math.round(sampleRate / 2) };
+}
