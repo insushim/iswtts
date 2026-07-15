@@ -39,14 +39,18 @@ function releasePreload(entry: CacheEntry): void {
 // (v1.6.2 의 "전부 모델 speed" 방침은 Whisper CER 실측으로 폐기: 모델 2.0=CER72%, 3.0=82%
 //  — "2배속부터 씹힘"의 근본원인. 재생속도 2.0=CER10% 로 온전. 과거 "setPlaybackRate 기기별
 //  무음" 보고는 당시 모델 speed≥4 무음과 뒤섞인 미확정 귀속 — 재발 시 이 줄에 실측 기록할 것.)
-// 선행 합성 버퍼 깊이(파일). 재생 중 유닛 1 + 선행 6(player.ts PREFETCH_UNITS)보다 크게.
-// 왜 깊은가(2026-07-13 실측): 합성 RTF 는 맥 M-series 에서 0.11~0.34, 안드로이드 중급기면
-// 그 5~10배 → 1.5× 재생이 요구하는 예산(RTF<0.67)에 아슬아슬하게 걸친다. 문장 길이 편차와
-// CPU 스파이크가 겹치는 순간 캐시가 말라 발화 시작이 밀리고, 그 밀림이 문장마다 들쭉날쭉해
-// "속도가 왔다 갔다 + 말이 씹힌다"로 들린다. 버퍼를 깊게 두면 그 지터를 흡수한다.
+// 선행 합성 버퍼 깊이(파일). 선행 20(prefetchUnits)보다 크게 잡아 재생 중 유닛 + 선행분이
+// 캐시에서 서로를 밀어내지 않게 한다(여유 4 = 경합·타이밍 대비. 선행 개수는 player.ts 가
+// depth 로 항상 상한하므로 대사 세그먼트가 많아도 20을 넘지 않는다).
+// 왜 이렇게 깊은가(2026-07-13 실측 + 2026-07-15 사용자 선택): 합성 RTF 는 맥 M-series 에서
+// 0.11~0.34, 안드로이드 중급기면 그 5~10배 → 1.5× 재생 예산(RTF<0.67)에 아슬아슬하게 걸친다.
+// 문장 길이 편차·CPU 스파이크가 겹치는 순간 캐시가 말라 발화 시작이 밀리고, 그 밀림의 편차가
+// "속도가 왔다 갔다"였다. 버퍼를 깊게(20) 두면 짧은 문장에서 합성이 앞서 벌어둔 여유로 가끔
+// 오는 무거운 문장을 덮어 지터를 흡수한다. 폰이 *평균적으로* 예산 안이면 이걸로 평탄해지고,
+// *평균적으로도* 못 따라가면 버퍼로는 못 고친다(그땐 진단이 "준비 속도"로 알려줌).
 // (합성은 체인 직렬이라 동시 CPU 부하는 그대로 1건씩 — 큐만 깊어진다.)
-// 메모리: 44.1kHz WAV ≈ 1MB/5초 문장 × 8 ≈ 8MB(캐시 디렉토리, cacheSweep 이 정리).
-const MAX_CACHE = 8;
+// 메모리: 파일은 디스크 캐시(메모리 아님) — 44.1kHz WAV ≈ 1MB/5초 × 24 ≈ 24MB(cacheSweep 정리).
+const MAX_CACHE = 24;
 // 미리 만들어 두는 AudioPlayer 수 상한. 파일 캐시(8)와 달리 플레이어는 네이티브 자원이라
 // 다음 발화 몫만 준비해 둔다(문장 시작 즉시 재생 효과는 1~2개로 이미 다 얻는다).
 const MAX_PRELOAD = 2;
@@ -73,6 +77,8 @@ function langOf(language?: string): string {
 export class SherpaTtsEngine implements TtsEngine {
   readonly id = 'sherpa';
   readonly offline = true;
+  // 오프라인은 CPU 가 재생을 아슬아슬하게 따라가므로 깊게 미리 만든다(MAX_CACHE 보다 작게).
+  readonly prefetchUnits = 20;
 
   private native: NativeTts | null = null;
   private initPromise: Promise<NativeTts> | null = null;

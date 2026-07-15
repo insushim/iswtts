@@ -25,6 +25,11 @@ export type EngineVoice = {
 export interface TtsEngine {
   readonly id: string;
   readonly offline: boolean;
+  // 선택: 미리 합성해 둘 발화 유닛 수(문장/세그먼트). 엔진 특성에 맞춘다 —
+  // 오프라인(sherpa)은 CPU 가 재생을 아슬아슬하게 따라가므로 깊게(짧은 문장에서 벌어둔
+  // 여유로 무거운 문장을 덮는다), 온라인(Edge)은 문장마다 WebSocket 이라 깊으면 연결 낭비.
+  // player.ts 가 이 값으로 prefetch 루프 깊이를 정한다. 미지정 시 보수적 기본(3).
+  readonly prefetchUnits?: number;
   speak(text: string, params: SpeakParams, handlers: SpeakHandlers): void;
   stop(): void;
   getVoices(): Promise<EngineVoice[]>;

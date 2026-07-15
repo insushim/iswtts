@@ -139,13 +139,10 @@ function maybeWarnSlowDevice(rate: number): void {
   });
 }
 
-// 선행 합성 깊이(발화 유닛 수). 엔진 캐시 상한(sherpa MAX_CACHE=8)보다 작게 유지해
-// 재생 중 유닛 + 선행분이 캐시에서 서로를 밀어내지 않게 한다.
-// 깊이 6인 이유(2026-07-13): 오프라인 합성은 기기 CPU 에 따라 1.5× 재생 소비를 아슬아슬하게
-// 따라가거나 못 따라간다(합성 RTF 실측 — 맥 0.11, 안드로이드 중급기 추정 0.5~1.1). 깊이 3은
-// 문장 길이 편차·CPU 스파이크 한 번에 말라붙어 발화 시작이 밀렸고, 그 밀림의 편차가 곧
-// "속도가 왔다 갔다"였다. 버퍼를 깊게 잡아 지터를 흡수한다(합성은 직렬이라 CPU 부하는 불변).
-const PREFETCH_UNITS = 6;
+// 선행 합성 깊이는 엔진이 자기 특성에 맞게 정한다(TtsEngine.prefetchUnits) — 오프라인은 깊게
+// (CPU 지터 흡수), 온라인은 얕게(연결 낭비 방지). 각 엔진 캐시 상한(MAX_CACHE)보다 작아야
+// 재생 중 유닛 + 선행분이 캐시에서 서로를 밀어내지 않는다. 미지정 엔진은 보수적 기본(3).
+const DEFAULT_PREFETCH_UNITS = 3;
 
 export const usePlayer = create<PlayerState>((set, get) => {
   const speakCurrent = () => {
@@ -256,19 +253,20 @@ export const usePlayer = create<PlayerState>((set, get) => {
       });
 
       // 다음 발화 단위들을 미리 합성(문장 간·세그먼트 간 딜레이 제거). 시스템 엔진은 no-op.
-      // 깊이는 PREFETCH_UNITS(선언부 주석에 근거) — 상한은 엔진 캐시(MAX_CACHE)가 관리.
+      // 깊이는 engine.prefetchUnits(엔진별) — 상한은 엔진 캐시(MAX_CACHE)가 관리.
       // 기기가 이 배속의 실시간 합성을 못 따라가면(버퍼를 깊게 잡아도 계속 마름) 그건 코드로
       // 못 고치는 성능 한계다 — 추측하게 두지 말고 사용자에게 선택지를 알린다(앱 실행당 1회).
       if (!fellBack && engineId === 'sherpa') maybeWarnSlowDevice(settings.rate);
 
       if (!fellBack) {
+        const depth = engine.prefetchUnits ?? DEFAULT_PREFETCH_UNITS;
         const upcoming: DialogueSegment[] = [];
-        for (let k = si + 1; k < segs.length && upcoming.length < PREFETCH_UNITS; k++) {
+        for (let k = si + 1; k < segs.length && upcoming.length < depth; k++) {
           upcoming.push(segs[k]);
         }
-        for (let n = index + 1; n < sentences.length && upcoming.length < PREFETCH_UNITS; n++) {
+        for (let n = index + 1; n < sentences.length && upcoming.length < depth; n++) {
           const nsegs = allSegs?.[n] ?? [{ text: sentences[n], start: 0, dialogue: false }];
-          for (let k = 0; k < nsegs.length && upcoming.length < PREFETCH_UNITS; k++) {
+          for (let k = 0; k < nsegs.length && upcoming.length < depth; k++) {
             upcoming.push(nsegs[k]);
           }
         }

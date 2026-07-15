@@ -50,7 +50,10 @@ const CONNECT_TIMEOUT_MS = 8000;
 // 연결 후 합성 전체(오디오 수신 완료까지)의 상한. 기존엔 연결 타이머가 끝까지 살아 있어
 // 8초 넘는 정상 합성(긴 문장·느린 망)도 "연결 시간 초과"로 오탐 종료됐다 → 단계별 타이머로 분리.
 const SYNTH_TIMEOUT_MS = 25000;
-// 재생 중 유닛 1 + 선행 합성 3(player.ts PREFETCH_UNITS) — 배속에서 파이프라인이 마르지 않는 깊이.
+// 재생 중 유닛 1 + 선행 합성 3(prefetchUnits) — 배속에서 파이프라인이 마르지 않는 깊이.
+// 오프라인(sherpa)과 달리 얕게 두는 이유: Edge 는 문장마다 독립 WebSocket 연결이라(직렬 체인이
+// 아님) 깊게 미리 만들면 그만큼 동시 연결이 열려 서버 부하·연결 낭비가 된다. 병목도 CPU 가
+// 아니라 망 지연이라 얕은 버퍼로 충분하다.
 const MAX_CACHE = 4;
 // 네이티브 상태 이벤트 주기(ms). PiP(작은 창)에선 Android가 액티비티를 pause시켜 JS 타이머가
 // 얼어붙는다 — 이 이벤트는 액티비티 생명주기와 무관한 코루틴에서 계속 도착해 자막을 움직인다.
@@ -65,6 +68,8 @@ const STATUS_UPDATE_MS = 80;
 export class EdgeTtsEngine implements TtsEngine {
   readonly id = 'edge';
   readonly offline = false;
+  // 온라인은 문장마다 WebSocket — 얕게(MAX_CACHE 보다 작게). 깊게 잡으면 동시 연결만 낭비.
+  readonly prefetchUnits = 3;
 
   private playGen = 0;
   // 재생 전용 필드(현재 울리는 문장 하나)
