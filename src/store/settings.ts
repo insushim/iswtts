@@ -14,10 +14,6 @@ export type SettingsState = {
   voiceId?: string;       // 시스템 엔진 선택 음성(엔진 식별자)
   edgeVoiceId?: string;   // Edge 엔진 선택 음성(예: ko-KR-SunHiNeural). 엔진마다 식별자 체계가 달라 분리.
   sherpaVoiceId?: string; // sherpa(오프라인 신경망) 화자 sid('0'~'9')
-  // 고품질 엔진의 배속 실효 상한(Edge=서버 포화 2×, sherpa=재생속도 3× — 실측) 초과 설정 시
-  // 시스템 TTS로 전환해 "진짜" 그 속도를 낼지. 기본 false = 선택한 음성 유지(속도는 상한 클램프).
-  // (v1.8.0 edgeHighSpeedFallback(기본 true)은 사용자 청감 반박으로 폐기 — 키 교체로 무효화.)
-  highSpeedSystemVoice: boolean;
   // 대사(따옴표 발화)를 다른 목소리로 낭독(멀티보이스). 대사 음성 미지정 시 자동 대비 음성.
   dialogueVoice: boolean;
   dialogueVoiceId?: string;       // 시스템 엔진 대사 음성(미지정 = 같은 음성 + 피치 대비)
@@ -39,7 +35,6 @@ export const useSettings = create<SettingsState>()(
       voiceId: undefined,
       edgeVoiceId: undefined,
       sherpaVoiceId: undefined,
-      highSpeedSystemVoice: false,
       dialogueVoice: false,
       dialogueVoiceId: undefined,
       edgeDialogueVoiceId: undefined,
@@ -65,7 +60,6 @@ export const useSettings = create<SettingsState>()(
         voiceId: s.voiceId,
         edgeVoiceId: s.edgeVoiceId,
         sherpaVoiceId: s.sherpaVoiceId,
-        highSpeedSystemVoice: s.highSpeedSystemVoice,
         dialogueVoice: s.dialogueVoice,
         dialogueVoiceId: s.dialogueVoiceId,
         edgeDialogueVoiceId: s.edgeDialogueVoiceId,

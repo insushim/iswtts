@@ -1,8 +1,6 @@
 import { create } from 'zustand';
 import type { TtsEngine } from '../tts/TtsEngine';
 import { getEngine, systemEngine } from '../tts';
-import { EDGE_MAX_RATE } from '../tts/edge/rate';
-import { SHERPA_QUALITY_MAX } from '../tts/sherpa/rate';
 import { sherpaStats, resetSherpaStats } from '../tts/sherpa/stats';
 import { contrastEdgeVoice } from '../tts/edge/voices';
 import { splitDialogue, type DialogueSegment } from '../lib/dialogue';
@@ -121,8 +119,6 @@ function segsOf(sentences: string[]): DialogueSegment[][] {
   return segCache;
 }
 
-// Edge 2× 초과 자동 전환 안내는 앱 실행당 1회만(문장마다 배너가 뜨면 소음).
-let highSpeedNoticeShown = false;
 let slowDeviceNoticeShown = false;
 
 // 오프라인 합성이 재생 소비를 못 따라가는 상태의 판정(기기 실측 기반 — stats.ts).
@@ -152,19 +148,12 @@ export const usePlayer = create<PlayerState>((set, get) => {
     // 서킷 열림(연속 실패 백오프) 중엔 해당 엔진을 건너뛰고 시스템으로 — 백오프가 끝나면 자동 재시도.
     const settings = useSettings.getState();
     const wantId = settings.engineId;
-    let engineId =
+    const engineId =
       wantId !== 'system' && Date.now() < (engineBlockedUntil[wantId] || 0) ? 'system' : wantId;
-    // 설정 배속은 어느 엔진이든 그대로 적용된다(상한 없음 — 사용자 방침 2026-07-06).
-    // 이 옵션은 품질 무손상 임계(Edge=2×, sherpa=3.2× — CER 실측) 초과 시 더 또렷한
-    // 시스템 TTS 로 바꿔 듣고 싶은 사용자를 위한 선택지일 뿐이다.
-    const qualityMax = engineId === 'edge' ? EDGE_MAX_RATE : engineId === 'sherpa' ? SHERPA_QUALITY_MAX : Infinity;
-    if (settings.rate > qualityMax && settings.highSpeedSystemVoice) {
-      engineId = 'system';
-      if (!highSpeedNoticeShown) {
-        highSpeedNoticeShown = true;
-        set({ notice: '설정에 따라 고배속은 기본 음성으로 낭독합니다.' });
-      }
-    }
+    // 설정 배속은 어느 엔진이든 그대로 적용된다(상한 없음 — 사용자 방침 2026-07-06). 고배속에서도
+    // 선택한 음성(오프라인 고품질 등)을 그대로 유지한다 — 예전의 "3× 초과 시 기본 음성 강제 전환"은
+    // 사용자 지시로 폐지(2026-07-16): 재생 중 배속을 오르내릴 때 엔진이 바뀌며 재합성 큐가 꼬여
+    // 낭독이 멈추는 원인이었고, 사용자는 빠른 속도에서도 오프라인 목소리를 원한다.
     const engine = getEngine(engineId);
     // 엔진 전환 시에만 이전 엔진을 완전 정지(그 엔진의 prefetch 캐시까지 비움).
     // 같은 엔진이면 stop()을 부르지 않는다 — engine.speak()가 현재 재생만 끊고 prefetch 캐시는 보존해,
@@ -360,19 +349,6 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     applyRate: (rate) => {
       if (!get().playing) return;
-      // 고배속 시스템 전환 옵션이 켜져 있으면, 새 배속이 품질임계를 넘나들 때 발화 엔진
-      // 자체가 바뀌어야 한다(speakCurrent 의 전환 로직) — 라이브 적용으로 건너뛰면 그
-      // 문장만 설정이 무시된다(교차검증 발견 2026-07-08). 이 경우 재발화 경로로.
-      const s = useSettings.getState();
-      if (s.highSpeedSystemVoice) {
-        const wantMax =
-          s.engineId === 'edge' ? EDGE_MAX_RATE : s.engineId === 'sherpa' ? SHERPA_QUALITY_MAX : Infinity;
-        const shouldBeSystem = rate > wantMax;
-        if (shouldBeSystem !== (activeEngine === systemEngine)) {
-          get().seek(get().index);
-          return;
-        }
-      }
       // 현재 울리는 문장에 라이브 적용을 시도 — 성공하면 재합성·침묵 없이 즉시 새 속도.
       // (sherpa 1×~3× 구간, Edge 는 SSML 몫이 같은 구간(2×↔2.5×↔3×…)에서 성공.)
       if (activeEngine.setRate?.(rate)) return;

@@ -107,8 +107,19 @@ export class SherpaTtsEngine implements TtsEngine {
     this.teardownPlayback();
     const key = this.keyOf(text, params);
     let entry = this.cache.get(key);
-    if (entry) this.cache.delete(key); // 소비: 파일 소유권을 재생 쪽으로 이전
-    else entry = this.makeSynth(text, params);
+    if (entry) {
+      this.cache.delete(key); // 소비: 파일 소유권을 재생 쪽으로 이전(선행합성 히트 = 부드러운 자동진행)
+    } else {
+      // 캐시 미스 = 지금 당장 들려줄 이 문장이 아직 안 만들어졌다. 합성 체인은 같은 네이티브
+      // 인스턴스라 1건씩 직렬이고 FIFO 라, 큐에 이미 쌓인 선행합성(미래 문장)이 이 문장보다 앞서
+      // 있으면 재생이 그 뒤에서 수십 초~수 분을 기다린다 = "배속 바꾸면 멈춤"의 진짜 원인(실측
+      // 2026-07-16: 재생 중 −/+ 로 배속을 빠르게 오르내리면 재발화가 겹치며 선행합성이 현재 문장
+      // 앞을 막아 ~80s+ 정지). 그래서 지금 큐에 있는 선행합성을 전부 취소하고(취소분은 doSynthesize
+      // 진입 즉시 throw 되어 체인이 곧장 다음으로 넘어감) 이 문장을 최우선으로 만든다. 미래분은 아래
+      // prefetch 루프가 곧바로 다시 채운다. 정상 자동진행은 항상 캐시 히트라 이 경로를 타지 않는다.
+      this.clearCache();
+      entry = this.makeSynth(text, params);
+    }
     this.pendingSynth = entry;
     // 발화 시작까지 실제로 기다린 시간 = 파이프라인이 말랐는지의 직접 증거(stats.ts).
     // 캐시 히트(합성 완료분)면 0 에 수렴하고, 마르면 그 대기가 곧 낭독 리듬의 흔들림이다.

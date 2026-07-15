@@ -168,13 +168,20 @@ export default function PlayerScreen({ route, navigation }: Props) {
   // 표시 진행률: 드래그 중엔 손가락 위치, 평소엔 실제 진행.
   const progressPct = indexToPct(index, sentences.length);
   const fillPct = scrub ?? progressPct;
-  const cycleRate = () => {
-    // 현재 속도보다 큰 첫 프리셋으로 이동, 없으면 처음으로 순환.
-    // (설정 스테퍼로 만든 프리셋 밖 값 0.5·1.75·4.75 등에서도 0.75로 급락하지 않음)
-    const nextRate = RATE_STEPS.find((s) => s > rate + 0.001) ?? RATE_STEPS[0];
-    setSettings({ rate: nextRate });
+  const rateMin = RATE_STEPS[0];
+  const rateMax = RATE_STEPS[RATE_STEPS.length - 1];
+  // 재생 중 배속 +/- (양방향, 순환 없음 — 끝에서 멈춘다). 예전 단일 순환 버튼은 10× 다음이
+  // 0.5× 로 급락(랩)해, 그 0.5× 저속 합성이 직렬 큐를 막아 "10배속 갔다 1배속 오면 멈춤"의
+  // 방아쇠였다(실측 2026-07-16). 이제 −/+ 로 인접 단계만 이동해 그 함정을 원천 차단한다.
+  const stepRate = (dir: 1 | -1) => {
+    const next =
+      dir > 0
+        ? RATE_STEPS.find((s) => s > rate + 0.001) ?? rateMax
+        : [...RATE_STEPS].reverse().find((s) => s < rate - 0.001) ?? rateMin;
+    if (next === rate) return;
+    setSettings({ rate: next });
     // 재생 중이면 즉시 반영 — 가능하면 라이브(끊김 0), 불가하면 현재 문장 재발화.
-    usePlayer.getState().applyRate(nextRate);
+    usePlayer.getState().applyRate(next);
   };
 
   if (loading) {
@@ -278,6 +285,39 @@ export default function PlayerScreen({ route, navigation }: Props) {
         />
       </View>
 
+      {/* 배속 스테퍼 (−/값/+): 재생 중에도 양방향 조절, 끝에서 멈춤 */}
+      <View style={styles.rateRow}>
+        <TouchableOpacity
+          onPress={() => stepRate(-1)}
+          disabled={rate <= rateMin + 0.001}
+          hitSlop={10}
+          style={[
+            styles.rateStep,
+            { borderColor: p.border, backgroundColor: p.surface, opacity: rate <= rateMin + 0.001 ? 0.4 : 1 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="배속 낮추기"
+        >
+          <Text style={[styles.rateStepText, { color: p.text }]}>−</Text>
+        </TouchableOpacity>
+
+        <Text style={[styles.rateValue, { color: p.text }]}>{rate}×</Text>
+
+        <TouchableOpacity
+          onPress={() => stepRate(1)}
+          disabled={rate >= rateMax - 0.001}
+          hitSlop={10}
+          style={[
+            styles.rateStep,
+            { borderColor: p.border, backgroundColor: p.surface, opacity: rate >= rateMax - 0.001 ? 0.4 : 1 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="배속 높이기"
+        >
+          <Text style={[styles.rateStepText, { color: p.text }]}>+</Text>
+        </TouchableOpacity>
+      </View>
+
       {/* 컨트롤 */}
       <View style={[styles.controls, { paddingBottom: insets.bottom + 20 }]}>
         <TouchableOpacity
@@ -310,15 +350,6 @@ export default function PlayerScreen({ route, navigation }: Props) {
           accessibilityLabel="다음 문장"
         >
           <SkipIcon color={p.text} dir={1} />
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={cycleRate}
-          style={[styles.rateBtn, { borderColor: p.border, backgroundColor: p.surface }]}
-          accessibilityRole="button"
-          accessibilityLabel={`재생 속도 ${rate}배. 누르면 다음 단계로 변경`}
-        >
-          <Text style={[styles.rateText, { color: p.text }]}>{rate}×</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -396,13 +427,26 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 4 },
   },
-  rateBtn: {
-    borderWidth: 1,
-    borderRadius: 18,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    position: 'absolute',
-    right: 20,
+  rateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 18,
   },
-  rateText: { fontSize: 14, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  rateStep: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rateStepText: { fontSize: 26, fontWeight: '600', lineHeight: 30 },
+  rateValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+    minWidth: 64,
+    textAlign: 'center',
+  },
 });

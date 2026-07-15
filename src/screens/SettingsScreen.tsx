@@ -356,24 +356,6 @@ export default function SettingsScreen() {
             ※ 이 엔진 사용 시 읽는 문장이 음성 생성을 위해 Microsoft 서버로 전송됩니다.
           </Text>
         </TouchableOpacity>
-        {(isEdge || isSherpa) && (
-          <TouchableOpacity
-            onPress={() => s.set({ highSpeedSystemVoice: !s.highSpeedSystemVoice })}
-            style={[styles.engine, { borderColor: p.border }]}
-            accessibilityRole="switch"
-            accessibilityLabel="배속 한계 초과 시 기본 음성으로 전환"
-            accessibilityState={{ checked: s.highSpeedSystemVoice }}
-          >
-            <Text style={{ color: p.text, fontWeight: '600' }}>
-              {s.highSpeedSystemVoice ? '☑' : '☐'} 초고배속은 기본 음성으로 전환
-            </Text>
-            <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 3 }}>
-              설정한 배속은 항상 그대로 적용됩니다. 다만 온라인 2배·오프라인 3배를 넘어서면
-              음질이 거칠어질 수 있는데, 이 옵션을 켜면 그 구간에서 기기 기본 음성(고배속에
-              강함)으로 자동 전환해 줍니다.
-            </Text>
-          </TouchableOpacity>
-        )}
         <TouchableOpacity
           onPress={() => {
             if (modelState === 'ready') {
