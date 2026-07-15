@@ -10,7 +10,6 @@ import { compressSilence, trimEdgeSilence } from './smartSpeed';
 import { estimateWordBoundaries, type WordBoundary } from './align';
 import { recordSynth, recordStarvation, recordPlaybackProgress } from './stats';
 import { subtitlesVisible, onVisibilityChange } from '../../lib/visibility';
-import { prepareAudio } from './resample';
 
 // trimFactor: 스마트 스피드(무음 압축)로 이미 번 배속(미압축=1) — 재생속도에서 이만큼 덜어낸다.
 type Synth = { uri: string; boundaries: WordBoundary[]; trimFactor: number };
@@ -46,7 +45,7 @@ function releasePreload(entry: CacheEntry): void {
 // CPU 스파이크가 겹치는 순간 캐시가 말라 발화 시작이 밀리고, 그 밀림이 문장마다 들쭉날쭉해
 // "속도가 왔다 갔다 + 말이 씹힌다"로 들린다. 버퍼를 깊게 두면 그 지터를 흡수한다.
 // (합성은 체인 직렬이라 동시 CPU 부하는 그대로 1건씩 — 큐만 깊어진다.)
-// 메모리: 22.05kHz WAV(resample.ts 로 절반) ≈ 0.5MB/5초 문장 × 8 ≈ 4MB(cacheSweep 이 정리).
+// 메모리: 44.1kHz WAV ≈ 1MB/5초 문장 × 8 ≈ 8MB(캐시 디렉토리, cacheSweep 이 정리).
 const MAX_CACHE = 8;
 // 미리 만들어 두는 AudioPlayer 수 상한. 파일 캐시(8)와 달리 플레이어는 네이티브 자원이라
 // 다음 발화 몫만 준비해 둔다(문장 시작 즉시 재생 효과는 1~2개로 이미 다 얻는다).
@@ -400,12 +399,14 @@ export class SherpaTtsEngine implements TtsEngine {
     if (state.cancelled) throw new Error('cancelled');
     if (!audio.samples?.length) throw new Error('오프라인 음성 합성 실패(빈 오디오)');
 
-    // 다운샘플 먼저(resample.ts): 44.1kHz → 22.05kHz. 이 뒤의 모든 단계(무음 분석·트림·정렬·
-    // WAV 브릿지 전송·파일 쓰기)와 재생 단계(디코딩·Sonic 스트레치)가 전부 절반 비용이 된다.
-    // 명료도 손실 0(Whisper CER 실측 44.1k 0.0% → 22.05k 0.0%, 2026-07-14).
-    // 샘플과 레이트는 한 객체로 함께 온다 — 따로 들고 다니다 헤더가 어긋나면 칩멍크가 된다
-    // (v1.17.0 사고. resample.ts 주석 참조).
-    const { samples: rawSamples, sampleRate } = prepareAudio(audio.samples, audio.sampleRate);
+    // 원본 44.1kHz 그대로 사용. v1.17 의 22.05kHz 다운샘플은 폐기(2026-07-15) — 값싼 3탭
+    // 저역통과가 나이퀴스트(11kHz) 근처 앨리어싱을 통과시켜 "지직거림 + 발음 뭉개짐"을 냈다
+    // (제대로 된 폴리페이즈 리샘플이면 그 대역을 −2.7dB 깎지만 3탭은 +0.2dB 로 흘려보냄, 왜곡
+    // −30dB — 사용자 보고 + scipy 대조 실측). Whisper CER 은 0% 였지만 그건 "알아들린다"일 뿐
+    // "좋게 들린다"가 아니었다(자기함정). 배터리 이득도 codex 판정상 제한적(진짜 소비원은 80ms
+    // 네이티브 이벤트)이라, 확실한 음질 손상과 맞바꿀 가치가 없었다. 검증된 원본으로 복귀.
+    const rawSamples: ArrayLike<number> = audio.samples;
+    const sampleRate = audio.sampleRate;
 
     // 무음 처리(smartSpeed.ts):
     // - ≤3×: 앞뒤 무음만 트림(말소리·내부 쉼 불변, 속도 보상 없음) — Supertonic 이 문장마다
@@ -430,9 +431,8 @@ export class SherpaTtsEngine implements TtsEngine {
     if (!dir) throw new Error('캐시 디렉토리 없음');
     const name = `sherpa-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.wav`;
     const plainPath = `${dir}${name}`;
-    // ⚠️ 반드시 sampleRate(다운샘플 반영값)로 저장할 것. audio.sampleRate(원본 44.1kHz)를 쓰면
-    // 22.05kHz 데이터에 44.1kHz 헤더가 붙어 2배 빠르고 한 옥타브 높은 "칩멍크" 재생이 된다
-    // (v1.17.0 실제 사고 2026-07-14 — 사용자 보고 "목소리가 모두 뱁새처럼 바뀜").
+    // ⚠️ 샘플과 sampleRate 는 항상 짝을 맞춰 저장할 것. 데이터 길이와 헤더 레이트가 어긋나면
+    // 배속·피치가 통째로 틀어진다("칩멍크" 사고 2026-07-14). 지금은 원본 그대로라 audio 값 사용.
     await saveAudioToFile({ samples, sampleRate }, plainPath);
     const uri = `file://${plainPath}`;
     if (state.cancelled) {
