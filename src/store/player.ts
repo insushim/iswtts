@@ -221,12 +221,24 @@ export const usePlayer = create<PlayerState>((set, get) => {
       };
       eng.speak(seg.text, speakParams(engId, seg.dialogue), {
         ...handlers,
-        onError: () => {
+        onError: (err?: Error) => {
           if (myEpoch !== epoch) return;
           // 비-시스템 엔진(Edge/sherpa) 실패 시 → 같은 세그먼트를 시스템 TTS로 폴백해 낭독이 끊기지 않게.
           if (engId !== 'system') {
+            // 모델 미설치(앱 업데이트로 음성 데이터 위치가 바뀐 v1.19 마이그레이션 포함)는
+            // "재생 문제"가 아니라 "다운로드 필요" — 뭘 해야 하는지 정확히 알려준다
+            // (실측 2026-07-16: 안내 없이 조용히 기본 음성 폴백 → 사용자는 "고품질
+            // 오프라인이 아예 안 된다"로 인지).
+            const missingModel =
+              engId === 'sherpa' && /설치되지 않았습니다/.test(String(err?.message ?? ''));
             // 연속 실패 집계 — 한도 도달 시 잠시 해당 엔진을 차단하고 사용자에게 1회 알림.
-            if (reportEngineFailure(engId)) {
+            const circuitOpened = reportEngineFailure(engId);
+            if (missingModel) {
+              set({
+                notice:
+                  '고품질 오프라인 음성 데이터가 아직 없습니다 — 설정에서 "음성 데이터 받기"(195MB)를 눌러 주세요. 지금은 기본 음성으로 읽어드립니다.',
+              });
+            } else if (circuitOpened) {
               set({
                 notice:
                   engId === 'edge'

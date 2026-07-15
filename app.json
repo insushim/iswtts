@@ -2,7 +2,7 @@
   "expo": {
     "name": "소리책",
     "slug": "iwtts",
-    "version": "1.19.0",
+    "version": "1.19.1",
     "owner": "insushim",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -12,7 +12,7 @@
     "updates": {
       "enabled": false
     },
-    "runtimeVersion": "1.19.0",
+    "runtimeVersion": "1.19.1",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -24,7 +24,7 @@
     },
     "android": {
       "package": "com.iwtts.app",
-      "versionCode": 31,
+      "versionCode": 32,
       "edgeToEdgeEnabled": false,
       "adaptiveIcon": {
         "backgroundColor": "#6366f1",
