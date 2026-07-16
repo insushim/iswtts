@@ -1,4 +1,4 @@
-// 현재 문장을 [앞 · 하이라이트 단어 · 뒤]로 분해 — PlayerScreen/PipView 공용(중복 제거).
+// 현재 문장을 [앞 · 하이라이트 단어 · 뒤]로 분해 — PlayerScreen 자막 렌더에서 사용.
 export function splitHighlight(
   sentence: string,
   wordStart: number,

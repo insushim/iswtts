@@ -8,18 +8,18 @@ import { AppState } from 'react-native';
 // React 리렌더. 화면이 꺼져 있으면 그 자막을 볼 사람이 없으므로 전부 순수한 낭비다.
 // (오디오 재생·다음 문장 큐잉·선행 합성은 계속돼야 하므로 그건 건드리지 않는다.)
 //
-// 자막이 실제로 보이는 경우 = 앱이 포그라운드(active) 이거나 PiP(작은 창) 모드.
-// PiP 는 AppState 상 background/inactive 로 보고되므로 별도로 알려줘야 한다(App.tsx).
+// 자막이 실제로 보이는 경우 = 앱이 포그라운드(active). 홈으로 백그라운드가 되거나 화면이 꺼지면
+// 보이지 않는다. (작은 창=PiP 는 폐지 — Android 가 PiP 창에서 RN 렌더를 정지시켜 자막이 얼어붙는
+// 구조적 한계였다. 배경 청취는 미디어 세션으로 유지. 2026-07-16.)
 
 let appActive = AppState.currentState === 'active';
-let pip = false;
-let last = appActive || pip;
+let last = appActive;
 
 type Listener = (visible: boolean) => void;
 const listeners = new Set<Listener>();
 
 function recompute(): void {
-  const now = appActive || pip;
+  const now = appActive;
   if (now === last) return;
   last = now;
   for (const l of listeners) {
@@ -40,12 +40,6 @@ export function subtitlesVisible(): boolean {
 export function onVisibilityChange(l: Listener): () => void {
   listeners.add(l);
   return () => listeners.delete(l);
-}
-
-/** PiP 진입/이탈 — App.tsx 가 expo-pip 상태로 호출. */
-export function setPipVisible(v: boolean): void {
-  pip = v;
-  recompute();
 }
 
 /** 앱 기동 시 1회(App.tsx). AppState 구독을 건다. */

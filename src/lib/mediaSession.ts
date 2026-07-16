@@ -162,17 +162,9 @@ export function startMediaSession(title: string): void {
   }
 }
 
-// 일시정지: 앵커만 멈추고 잠금화면 등록은 유지(알림의 ▶ 로 재개 가능).
-export function pauseMediaSession(): void {
-  desiredPlaying = false;
-  try {
-    anchor?.pause();
-  } catch {
-    /* noop */
-  }
-}
-
-// 세션 종료(문서 내리기 등): 잠금화면 알림까지 제거. 앵커 인스턴스는 재사용 위해 유지.
+// 세션 종료(일시정지·문서 내리기 등): 잠금화면 알림·mediaPlayback 포그라운드 서비스까지 제거해
+// 재생하지 않는 동안 OS 가 앱을 도즈·동결할 수 있게 한다(배터리). 앵커 인스턴스는 재사용 위해 유지.
+// (예전 pauseMediaSession = 앵커만 멈추고 FGS 유지 → 정지 중에도 전력 소모, 2026-07-16 폐지.)
 export function stopMediaSession(): void {
   desiredPlaying = false;
   if (confirmTimer) {

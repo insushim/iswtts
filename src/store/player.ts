@@ -8,7 +8,6 @@ import { useSettings } from './settings';
 import { useLibrary } from './library';
 import {
   startMediaSession,
-  pauseMediaSession,
   stopMediaSession,
   setRemoteHandlers,
 } from '../lib/mediaSession';
@@ -187,8 +186,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
         set({ index: st.index + 1 });
         speakCurrent();
       } else {
-        // 책 끝 = 완전 종료. 재생 엔진과 미디어 세션을 모두 내린다. pauseMediaSession 만 하면
-        // 앵커(무음 루프)는 멈춰도 setActiveForLockScreen(true) 로 등록된 mediaPlayback 포그라운드
+        // 책 끝 = 완전 종료. 재생 엔진과 미디어 세션을 모두 내린다. 앵커(무음 루프)만 멈추면
+        // setActiveForLockScreen(true) 로 등록된 mediaPlayback 포그라운드
         // 서비스가 계속 살아 있어, 아무것도 재생하지 않는데도 OS 가 앱을 동결/도즈하지 못해 배터리를
         // 계속 먹는다(사용자 보고 2026-07-16 "끝까지 가도 전기를 엄청 먹는 느낌"). stopMediaSession
         // 으로 포그라운드 서비스·잠금화면 알림을 내려 앱이 동결될 수 있게 한다. 재청취는 ▶(앱 내)로
@@ -250,13 +249,13 @@ export const usePlayer = create<PlayerState>((set, get) => {
               onError: () => {
                 if (myEpoch !== epoch) return;
                 set({ playing: false, notice: '재생에 실패했습니다 — 기기 TTS 설정을 확인해주세요.' });
-                pauseMediaSession();
+                stopMediaSession();
               },
             });
             return;
           }
           set({ playing: false, notice: '재생에 실패했습니다 — 기기 TTS 설정을 확인해주세요.' });
-          pauseMediaSession();
+          stopMediaSession();
         },
       });
 
@@ -302,7 +301,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       // 현재 기기 상태를 희석한다(교차검증 지적 2026-07-13). 느린 기기 안내도 다시 무장.
       resetSherpaStats();
       slowDeviceNoticeShown = false;
-      pauseMediaSession(); // 새 문서 준비 — 앵커도 정지 상태로 정렬(재생 시 새 제목으로 재개)
+      stopMediaSession(); // 새 문서 준비 — 재생 전엔 FGS 를 들지 않는다(재생 시 새 제목으로 재등록)
       set({
         docId,
         title,
@@ -324,7 +323,12 @@ export const usePlayer = create<PlayerState>((set, get) => {
       epoch++; // 진행 중 콜백 무효화
       activeEngine.stop();
       set({ playing: false });
-      pauseMediaSession();
+      // 일시정지 = 배터리도 쉬어야 한다(사용자 2026-07-16 "일시정지하면 배터리 안 먹는 게 낫지").
+      // pauseMediaSession 은 앵커만 멈추고 mediaPlayback 포그라운드 서비스는 살려둬(잠금화면 재개
+      // 알림 유지) OS 가 앱을 도즈하지 못해 전력을 계속 먹었다. stopMediaSession 으로 FGS·잠금화면
+      // 알림까지 내려 정지 중엔 앱이 동결·절전될 수 있게 한다. 화면 이탈(언마운트)도 이 pause 를
+      // 거치므로 목록으로 나가도 서비스가 잔존하지 않는다. 재개는 ▶(앱 내)로 세션 재등록.
+      stopMediaSession();
     },
 
     toggle: () => {
@@ -402,7 +406,7 @@ setRemoteHandlers({
     const st = usePlayer.getState();
     if (st.playing) return;
     if (st.sentences.length) st.play();
-    else pauseMediaSession(); // 읽을 문서가 없으면 앵커만 되돌림
+    else stopMediaSession(); // 읽을 문서가 없으면 세션·FGS 를 완전히 내린다
   },
   onRemotePause: () => {
     const st = usePlayer.getState();
