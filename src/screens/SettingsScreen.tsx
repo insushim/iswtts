@@ -26,6 +26,7 @@ import {
 } from '../lib/sherpaModel';
 import { sherpaStats, type SherpaStats } from '../tts/sherpa/stats';
 import { subtitlesVisible } from '../lib/visibility';
+import { openBatteryOptRequest } from '../lib/batteryOpt';
 import { APP_VERSION } from '../lib/config';
 import type { RootStackParamList } from '../../App';
 import type { EngineVoice } from '../tts/TtsEngine';
@@ -624,6 +625,25 @@ export default function SettingsScreen() {
         </View>
       )}
 
+      {Platform.OS === 'android' && (
+        <>
+          <Text style={[styles.section, { color: p.subtext }]}>배경 재생</Text>
+          <TouchableOpacity
+            onPress={openBatteryOptRequest}
+            style={[styles.bgBtn, { borderColor: p.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="배터리 최적화 예외 설정 열기"
+          >
+            <Text style={[styles.rowLabel, { color: p.text }]}>배터리 최적화 예외 설정</Text>
+            <Text style={{ color: p.primary, fontSize: 15 }}>열기 ›</Text>
+          </TouchableOpacity>
+          <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 6 }}>
+            화면을 끄면 잠시 뒤 낭독이 멈추는 기기라면, 이 앱을 배터리 최적화 예외로 등록하세요.
+            그러면 화면이 꺼져도 끝까지 이어서 읽어드립니다.
+          </Text>
+        </>
+      )}
+
       <Text style={[styles.version, { color: p.faint }]}>소리책 v{APP_VERSION}</Text>
     </ScrollView>
   );
@@ -641,6 +661,15 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   rowLabel: { fontSize: 16, fontWeight: '600' },
+  bgBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
   stepper: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   stepBtn: { borderWidth: 1, borderRadius: 10, width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   stepTxt: { fontSize: 20, fontWeight: '700' },

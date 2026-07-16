@@ -11,6 +11,7 @@ import {
   stopMediaSession,
   setRemoteHandlers,
 } from '../lib/mediaSession';
+import { promptBgReliabilityOnce } from '../lib/batteryOpt';
 
 // 재생 컨트롤러. 문장 큐를 순회하며 엔진에 발화시키고, onBoundary로 단어 하이라이트를 갱신한다.
 // epoch로 stale 콜백(정지/문장전환 후 뒤늦게 온 콜백)을 무효화한다.
@@ -316,6 +317,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     play: () => {
       if (!get().sentences.length) return;
+      // 첫 재생 시 1회: 배경(화면 꺼짐) 낭독이 배터리 관리에 끊기지 않도록 최적화 예외를 안내.
+      promptBgReliabilityOnce();
       speakCurrent();
     },
 

@@ -2,7 +2,7 @@
   "expo": {
     "name": "소리책",
     "slug": "iwtts",
-    "version": "1.20.2",
+    "version": "1.20.3",
     "owner": "insushim",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -12,7 +12,7 @@
     "updates": {
       "enabled": false
     },
-    "runtimeVersion": "1.20.2",
+    "runtimeVersion": "1.20.3",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -35,7 +35,8 @@
         "android.permission.WAKE_LOCK",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.REQUEST_INSTALL_PACKAGES"
+        "android.permission.REQUEST_INSTALL_PACKAGES",
+        "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
       ]
     },
     "web": {
