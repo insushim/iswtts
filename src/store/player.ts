@@ -187,8 +187,15 @@ export const usePlayer = create<PlayerState>((set, get) => {
         set({ index: st.index + 1 });
         speakCurrent();
       } else {
+        // 책 끝 = 완전 종료. 재생 엔진과 미디어 세션을 모두 내린다. pauseMediaSession 만 하면
+        // 앵커(무음 루프)는 멈춰도 setActiveForLockScreen(true) 로 등록된 mediaPlayback 포그라운드
+        // 서비스가 계속 살아 있어, 아무것도 재생하지 않는데도 OS 가 앱을 동결/도즈하지 못해 배터리를
+        // 계속 먹는다(사용자 보고 2026-07-16 "끝까지 가도 전기를 엄청 먹는 느낌"). stopMediaSession
+        // 으로 포그라운드 서비스·잠금화면 알림을 내려 앱이 동결될 수 있게 한다. 재청취는 ▶(앱 내)로
+        // 다시 시작하면 세션이 재등록된다. activeEngine.stop() 은 선행합성 캐시·오디오 자원까지 정리.
+        activeEngine.stop();
         set({ playing: false, wordStart: 0, wordLen: 0 });
-        pauseMediaSession(); // 책 끝 — 알림은 남겨 ▶ 로 재청취 가능
+        stopMediaSession();
       }
     };
 
