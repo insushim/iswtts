@@ -27,6 +27,7 @@ import {
 import { sherpaStats, type SherpaStats } from '../tts/sherpa/stats';
 import { subtitlesVisible } from '../lib/visibility';
 import { openBatteryOptRequest } from '../lib/batteryOpt';
+import { startBgSound, stopBgSound, setBgVolume } from '../lib/bgSound';
 import { APP_VERSION } from '../lib/config';
 import type { RootStackParamList } from '../../App';
 import type { EngineVoice } from '../tts/TtsEngine';
@@ -44,6 +45,14 @@ export default function SettingsScreen() {
   const p = usePalette();
   const insets = useSafeAreaInsets();
   const s = useSettings();
+
+  // 설정에서 배경음을 켜면 미리듣기로 바로 재생된다. 낭독 중이 아니라면 설정을 나갈 때 멈춘다
+  // (낭독이 재생 중이면 그 배경음은 계속 유지). 낭독 중엔 stopMediaSession 이 알아서 정리한다.
+  useEffect(() => {
+    return () => {
+      if (!usePlayer.getState().playing) stopBgSound();
+    };
+  }, []);
   const [voices, setVoices] = useState<EngineVoice[]>([]);
   const [sherpaVoices, setSherpaVoices] = useState<EngineVoice[]>([]);
   const [previewFail, setPreviewFail] = useState(false);
@@ -623,6 +632,44 @@ export default function SettingsScreen() {
             );
           })}
         </View>
+      )}
+
+      <Text style={[styles.section, { color: p.subtext }]}>배경음</Text>
+      <TouchableOpacity
+        onPress={() => {
+          const on = !s.bgSound;
+          s.set({ bgSound: on });
+          if (on) startBgSound(s.bgVolume); // 켜면 바로 들려준다(미리듣기 겸)
+          else stopBgSound();
+        }}
+        style={{ paddingVertical: 8 }}
+        accessibilityRole="switch"
+        accessibilityLabel="낭독 배경음 432Hz"
+        accessibilityState={{ checked: s.bgSound }}
+      >
+        <Text style={{ color: p.text, fontWeight: '600', fontSize: 15 }}>
+          {s.bgSound ? '☑' : '☐'} 낭독 배경음 (432Hz)
+        </Text>
+        <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 4 }}>
+          낭독 뒤에 은은한 432Hz 저음이 깔려 편안하게 들을 수 있어요. (참고: 432Hz의 건강 효과가
+          과학으로 입증된 건 아니지만, 배경음으로 두면 차분해진다는 분이 많아요.)
+        </Text>
+      </TouchableOpacity>
+      {s.bgSound && (
+        <Row
+          label="배경음 크기"
+          value={`${Math.round(s.bgVolume * 100)}%`}
+          onDec={() => {
+            const v = clamp(s.bgVolume - 0.05, 0, 0.6);
+            s.set({ bgVolume: v });
+            setBgVolume(v); // 재생 중이면 즉시 반영
+          }}
+          onInc={() => {
+            const v = clamp(s.bgVolume + 0.05, 0, 0.6);
+            s.set({ bgVolume: v });
+            setBgVolume(v);
+          }}
+        />
       )}
 
       {Platform.OS === 'android' && (

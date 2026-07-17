@@ -2,6 +2,7 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
 import { File, Paths } from 'expo-file-system';
 import { buildSilenceWav } from './silenceWav';
+import { stopBgSound } from './bgSound';
 
 // 백그라운드 낭독 유지 + 잠금화면 컨트롤의 핵심: "세션 앵커" 플레이어.
 //
@@ -167,6 +168,7 @@ export function startMediaSession(title: string): void {
 // (예전 pauseMediaSession = 앵커만 멈추고 FGS 유지 → 정지 중에도 전력 소모, 2026-07-16 폐지.)
 export function stopMediaSession(): void {
   desiredPlaying = false;
+  stopBgSound(); // 배경 앰비언트도 함께 정지(모든 정지 경로가 이 함수를 거친다)
   if (confirmTimer) {
     clearTimeout(confirmTimer);
     confirmTimer = null;

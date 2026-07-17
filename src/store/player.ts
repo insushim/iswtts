@@ -12,6 +12,7 @@ import {
   setRemoteHandlers,
 } from '../lib/mediaSession';
 import { promptBgReliabilityOnce } from '../lib/batteryOpt';
+import { startBgSound } from '../lib/bgSound';
 
 // 재생 컨트롤러. 문장 큐를 순회하며 엔진에 발화시키고, onBoundary로 단어 하이라이트를 갱신한다.
 // epoch로 stale 콜백(정지/문장전환 후 뒤늦게 온 콜백)을 무효화한다.
@@ -164,6 +165,9 @@ export const usePlayer = create<PlayerState>((set, get) => {
     set({ wordStart: 0, wordLen: 0, playing: true });
     // 백그라운드 유지 + 잠금화면 컨트롤(무음 앵커). 문장마다 불려도 무해(멱등).
     startMediaSession(get().title);
+    // 432Hz 배경 앰비언트(선택형) — 켜져 있으면 낭독 뒤에 은은히 깔린다(멱등). 정지는
+    // stopMediaSession 에 중앙화돼 모든 정지 경로에서 함께 멈춘다.
+    if (settings.bgSound) startBgSound(settings.bgVolume);
 
     // 진행률 저장
     if (docId) useLibrary.getState().setProgress(docId, index, sentences.length);
