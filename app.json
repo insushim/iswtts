@@ -2,7 +2,7 @@
   "expo": {
     "name": "소리책",
     "slug": "iwtts",
-    "version": "1.20.4",
+    "version": "1.20.5",
     "owner": "insushim",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -12,7 +12,7 @@
     "updates": {
       "enabled": false
     },
-    "runtimeVersion": "1.20.4",
+    "runtimeVersion": "1.20.5",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",

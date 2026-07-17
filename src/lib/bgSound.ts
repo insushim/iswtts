@@ -6,12 +6,24 @@ import { buildAmbientWav, AMBIENT_WAV_SIZE } from './ambientWav';
 // 낭독 오디오와 자동으로 믹싱된다(expo-audio 는 다중 플레이어 동시재생). 재생 중일 때만 돌고,
 // 정지/일시정지 시 함께 멈춘다(stopBgSound 는 stopMediaSession 에서 호출 → 모든 정지 경로 커버).
 
-const FILE = 'ambient-432.wav';
+// ⚠️ 톤을 바꾸면(같은 길이라 크기가 동일해 재사용 판정이 못 걸러냄) 반드시 파일명 버전을 올릴 것.
+// v2 = 2026-07-17 "덜 일렁이게" 튜닝(LFO·디튠↓). 예전 파일명은 LEGACY 로 지워 잔존 방지.
+const FILE = 'ambient-432-v2.wav';
+const LEGACY_FILES = ['ambient-432.wav'];
 
 let player: AudioPlayer | null = null;
 let curVolume = 0.2;
 
 function ensureUri(): string {
+  // 옛 버전 파일 정리(있으면).
+  for (const name of LEGACY_FILES) {
+    try {
+      const old = new File(Paths.document, name);
+      if (old.exists) old.delete();
+    } catch {
+      /* noop */
+    }
+  }
   const f = new File(Paths.document, FILE);
   // 이미 있고 크기가 기대값과 같으면 재생성 생략(매 실행 350KB 생성 방지). 손상/구버전이면 다시 만든다.
   if (f.exists && f.size === AMBIENT_WAV_SIZE) return f.uri;
