@@ -95,6 +95,10 @@ export const LEAD_PAD_MS = 40; // 트림 후 남길 문장 머리 여유
 // 비례(2×에선 160ms), >3× 스마트 스피드는 compressSilence 경로라 이 패드와 무관(빠른
 // 배속의 밀도는 그대로). 캐시 파일이 배속 무관 유효한 것도 이 방식 덕(레이트별 분기 금지).
 export const TRAIL_PAD_MS = 320;
+// 절단면 페이드: 트림 컷 지점의 파형은 문턱(≈−44dB) 직하라 0 으로 뚝 끊기면 조용한 절 끝에서
+// 미세한 틱으로 들릴 수 있다(1× "씹힘" 조사 2026-07-18). 컷이 실제로 일어난 가장자리에만
+// 짧은 선형 페이드를 입힌다. 무음 구간 위라 말소리 훼손 없음.
+export const EDGE_FADE_MS = 8;
 
 export function edgeSilenceCuts(
   samples: ArrayLike<number>,
@@ -128,6 +132,7 @@ export function trimEdgeSilence(
   sampleRate: number,
   leadPadMs?: number,
   trailPadMs?: number,
+  fadeMs = 0,
 ): number[] {
   const n = samples.length;
   const cuts = edgeSilenceCuts(samples, sampleRate, leadPadMs, trailPadMs);
@@ -140,7 +145,15 @@ export function trimEdgeSilence(
   // 전체 무음(합성 실패 성격) — 빈 오디오를 만들지 말고 원본 유지(compressSilence 와 동일 방침).
   if (end <= start) return Array.from(samples);
   if (start === 0 && end === n) return Array.from(samples);
-  return Array.prototype.slice.call(samples, start, end) as number[];
+  const out = Array.prototype.slice.call(samples, start, end) as number[];
+  // 절단면 페이드(EDGE_FADE_MS 주석 참조) — 컷이 일어난 가장자리에만. 잔여가 페이드 2개보다
+  // 짧으면 앞뒤 페이드가 겹쳐 이중 감쇠되므로 절반으로 클램프(교차검증 지적 2026-07-18).
+  if (fadeMs > 0) {
+    const f = Math.min(Math.floor(out.length / 2), Math.round((sampleRate * fadeMs) / 1000));
+    if (start > 0) for (let i = 0; i < f; i++) out[i] *= i / f;
+    if (end < n) for (let i = 0; i < f; i++) out[out.length - 1 - i] *= i / f;
+  }
+  return out;
 }
 
 export function compressSilence(samples: ArrayLike<number>, sampleRate: number): CompressedAudio {
