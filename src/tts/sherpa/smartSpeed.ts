@@ -89,22 +89,31 @@ export function findSilenceCuts(samples: ArrayLike<number>, sampleRate: number):
 // Supertonic 은 문장마다 앞 ~0.4s·뒤 ~0.5s 무음을 박아 생성(실측 2026-07-07) — 문장 전환
 // 시 "죽은 공기" ~0.9s 의 주범. 자연스러운 문장 간 숨은 패드로 남긴다.
 const EDGE_MIN_MS = 80; // 이보다 짧은 앞뒤 무음은 그대로(오탐 방지)
-const LEAD_PAD_MS = 40; // 트림 후 남길 문장 머리 여유
-const TRAIL_PAD_MS = 120; // 트림 후 남길 문장 꼬리 여유(문장 간 최소 숨)
+export const LEAD_PAD_MS = 40; // 트림 후 남길 문장 머리 여유
+// 트림 후 남길 문장 꼬리 여유 = 문장 간 숨. 320ms(2026-07-18, 구 120): 1× 낭독이 사람
+// 낭독처럼 문장 사이에서 숨을 고르도록 — 파일에 굽는 무음이라 재생 스트레치로 자동
+// 비례(2×에선 160ms), >3× 스마트 스피드는 compressSilence 경로라 이 패드와 무관(빠른
+// 배속의 밀도는 그대로). 캐시 파일이 배속 무관 유효한 것도 이 방식 덕(레이트별 분기 금지).
+export const TRAIL_PAD_MS = 320;
 
-export function edgeSilenceCuts(samples: ArrayLike<number>, sampleRate: number): SilenceCut[] {
+export function edgeSilenceCuts(
+  samples: ArrayLike<number>,
+  sampleRate: number,
+  leadPadMs: number = LEAD_PAD_MS,
+  trailPadMs: number = TRAIL_PAD_MS,
+): SilenceCut[] {
   const n = samples.length;
   const runs = quietRuns(samples, sampleRate);
   if (!runs.length) return [];
   const ms = (v: number) => (v * 1000) / sampleRate;
   const cuts: SilenceCut[] = [];
   const first = runs[0];
-  if (first.s === 0 && ms(first.e - first.s) >= EDGE_MIN_MS + LEAD_PAD_MS && first.e < n) {
-    cuts.push({ start: 0, end: first.e - Math.round((sampleRate * LEAD_PAD_MS) / 1000) });
+  if (first.s === 0 && ms(first.e - first.s) >= EDGE_MIN_MS + leadPadMs && first.e < n) {
+    cuts.push({ start: 0, end: first.e - Math.round((sampleRate * leadPadMs) / 1000) });
   }
   const last = runs[runs.length - 1];
-  if (last.e === n && ms(last.e - last.s) >= EDGE_MIN_MS + TRAIL_PAD_MS && last.s > 0) {
-    cuts.push({ start: last.s + Math.round((sampleRate * TRAIL_PAD_MS) / 1000), end: n });
+  if (last.e === n && ms(last.e - last.s) >= EDGE_MIN_MS + trailPadMs && last.s > 0) {
+    cuts.push({ start: last.s + Math.round((sampleRate * trailPadMs) / 1000), end: n });
   }
   return cuts;
 }
@@ -114,9 +123,14 @@ export function edgeSilenceCuts(samples: ArrayLike<number>, sampleRate: number):
 // 컷은 앞·뒤 최대 2개뿐이라 결과는 언제나 연속 구간 하나 = slice 한 번. 요소별 복사 루프를
 // 쓰지 않는 이유(2026-07-13): 문장 하나가 44.1kHz × 5초 ≈ 25만 샘플이고, 이 함수는 재생
 // 중에 선행 합성마다 돌아 JS 스레드를 잡는다. 그 점유가 오디오·자막을 밀어낸다.
-export function trimEdgeSilence(samples: ArrayLike<number>, sampleRate: number): number[] {
+export function trimEdgeSilence(
+  samples: ArrayLike<number>,
+  sampleRate: number,
+  leadPadMs?: number,
+  trailPadMs?: number,
+): number[] {
   const n = samples.length;
-  const cuts = edgeSilenceCuts(samples, sampleRate);
+  const cuts = edgeSilenceCuts(samples, sampleRate, leadPadMs, trailPadMs);
   let start = 0;
   let end = n;
   for (const c of cuts) {

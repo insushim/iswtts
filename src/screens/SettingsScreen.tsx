@@ -634,6 +634,27 @@ export default function SettingsScreen() {
         </View>
       )}
 
+      {isSherpa && (
+        <Text style={[styles.section, { color: p.subtext }]}>낭독 스타일</Text>
+      )}
+      {isSherpa && (
+        <TouchableOpacity
+          onPress={() => s.set({ breathSound: !s.breathSound })}
+          style={{ paddingVertical: 8 }}
+          accessibilityRole="switch"
+          accessibilityLabel="문장 숨소리"
+          accessibilityState={{ checked: s.breathSound }}
+        >
+          <Text style={{ color: p.text, fontWeight: '600', fontSize: 15 }}>
+            {s.breathSound ? '☑' : '☐'} 문장 숨소리
+          </Text>
+          <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 4 }}>
+            사람 낭독자처럼 긴 문장 앞에서 살짝 숨을 쉬어 더 자연스럽게 들려요. (고품질
+            오프라인 음성 전용, 3배속 이하에서만)
+          </Text>
+        </TouchableOpacity>
+      )}
+
       <Text style={[styles.section, { color: p.subtext }]}>배경음</Text>
       <TouchableOpacity
         onPress={() => {

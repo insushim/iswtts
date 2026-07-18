@@ -6,7 +6,9 @@ import type { TtsEngine, SpeakParams, SpeakHandlers, EngineVoice } from '../TtsE
 import { sherpaModelPath } from '../../lib/sherpaModel';
 import { sherpaModelSpeed, sherpaPlaybackRate, sherpaTrimEnabled } from './rate';
 import { disposePlayer } from '../disposePlayer';
-import { compressSilence, trimEdgeSilence } from './smartSpeed';
+import { compressSilence, trimEdgeSilence, LEAD_PAD_MS, TRAIL_PAD_MS } from './smartSpeed';
+import { normalizeForSpeech } from './normalizeKo';
+import { chunkForSynthesis } from './chunkKo';
 import { estimateWordBoundaries, type WordBoundary } from './align';
 import { recordSynth, recordStarvation, recordPlaybackProgress } from './stats';
 import { subtitlesVisible, onVisibilityChange } from '../../lib/visibility';
@@ -59,6 +61,17 @@ const STATUS_UPDATE_MS = 80;
 // 합성 1건 상한(첫 호출의 모델 로드 포함). 네이티브 hang 시 직렬화 체인 전체가 영구
 // 대기하는 것을 막는다 — 초과 시 이 건만 실패시키고(폴백 유도) 체인은 계속 흐른다.
 const SYNTH_TIMEOUT_MS = 60_000;
+
+// ── 장문 절 조립·숨소리 파라미터(≤3× 기준 체감, >3× 는 compressSilence 가 재압축) ──
+// 절 이음새 쉼 = 절 꼬리 80 + 삽입 120 + 절 머리 40(LEAD_PAD_MS) ≈ 240ms(쉼표 숨 관례 수준).
+const INTER_CHUNK_PAUSE_MS = 120;
+const CHUNK_TRAIL_PAD_MS = 80;
+// 숨소리: 이 길이(글자) 이상 문장 앞에만 — 사람 낭독자가 긴 문장 앞에서 숨을 고르는 관례.
+const BREATH_MIN_CHARS = 40;
+const BREATH_GAP_MS = 120; // 숨과 첫 말 사이 정적
+const BREATH_GAIN = 0.5; // 숨은 은은하게(말소리보다 한참 작게)
+const BREATH_LEAD_PAD_MS = 20; // 숨 오디오 자체의 앞뒤 패드(숨은 짧고 즉시 시작돼야 함)
+const BREATH_TRAIL_PAD_MS = 60;
 
 // sherpa 빌드의 Supertonic 은 5개 언어만 지원(en/ko/es/pt/fr). lang 미지정 시 네이티브가
 // 영어로 처리해 한국어 발음이 깨지므로(실측 2026-07-06) BCP-47 앞 2자를 매핑해 넘긴다.
@@ -294,6 +307,30 @@ export class SherpaTtsEngine implements TtsEngine {
     }
   }
 
+  // 경계 넘는 배속 변경의 즉각 반영(TtsEngine.setRateApprox 계약 참조). 현재 오디오의 실제
+  // 분담(모델 speed × 트림)을 알고 있으므로, 잔여 재생 스트레치만 목표 배속에 맞춰 당긴다:
+  // 곱 불변식(모델 × trim × 스트레치 = 설정 배속)을 그대로 푼 것. 품질은 이 문장 잔여 동안만
+  // 타협(스트레치가 3을 넘으면 CER 저하 구간) — 다음 문장부터 정식 합성이 이어받는다.
+  setRateApprox(rate: number): boolean {
+    if (!this.player || this.currentModelSpeed === null) return false;
+    try {
+      const target = Math.max(
+        0.5,
+        Math.min(10, rate / (this.currentModelSpeed * this.currentTrimFactor)),
+      );
+      this.player.setPlaybackRate(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // 미완료 선행합성만 공개적으로 취소(재생·완료 파일 불변) — 배속 경계 변경 직후 옛 배속
+  // 큐 제거용(player.applyRate).
+  cancelPending(): void {
+    this.cancelUnfinished();
+  }
+
   async getVoices(): Promise<EngineVoice[]> {
     // Supertonic 3 = 화자 10(sid 0~9). 라벨은 실청취로 고르게 안내(성별 메타데이터 없음).
     return Array.from({ length: 10 }, (_, i) => ({
@@ -369,9 +406,22 @@ export class SherpaTtsEngine implements TtsEngine {
 
   // ── 캐시/합성 ─────────────────────────────────────────
   // 캐시 키는 합성 파라미터만(재생속도는 재생 시 적용) — 1× 초과 배속끼리는 같은 합성을 재사용.
+  // 숨소리가 "실제로" 이 발화에 적용되는가 — keyOf 와 doSynthesize 가 반드시 같은 판정을
+  // 써야 한다(키만 갈리고 오디오가 같으면 동일 WAV 를 두 번 합성한다 — 교차검증 지적 2026-07-18).
+  private breathApplies(text: string, params: SpeakParams): boolean {
+    return (
+      !!params.breath &&
+      langOf(params.language) === 'ko' &&
+      !sherpaTrimEnabled(params.rate) &&
+      text.length >= BREATH_MIN_CHARS
+    );
+  }
+
   private keyOf(text: string, params: SpeakParams): string {
     const sid = params.voiceId || '0';
-    return `${sid}\u0000${sherpaModelSpeed(params.rate)}\u0000${langOf(params.language)}\u0000${text}`;
+    // breath 는 숨소리가 파일에 구워지므로 "실효" 여부만 키에 포함(토글 시 재합성 유도).
+    const breath = this.breathApplies(text, params) ? 'b' : '';
+    return `${sid}\u0000${sherpaModelSpeed(params.rate)}\u0000${langOf(params.language)}\u0000${breath}\u0000${text}`;
   }
 
   private makeSynth(text: string, params: SpeakParams): CacheEntry {
@@ -468,30 +518,51 @@ export class SherpaTtsEngine implements TtsEngine {
     // 모델 로드(첫 1회)는 합성 비용이 아니므로 계측 시작은 여기부터.
     const synthStart = Date.now();
 
+    // 발화 정규화(한국어만): 숫자→한글 읽기, 괄호 한자 주석 제거(normalizeKo.ts — 근거·실측
+    // 그 파일). 합성 입력만 바꾸고, 하이라이트 경계는 아래에서 "원문" 기준으로 계산한다.
+    const lang = langOf(params.language);
+    const spoken = lang === 'ko' ? normalizeForSpeech(text) : text;
+    // 장문은 절(쉼표) 단위로 나눠 각각 합성 후 이어 붙인다(chunkKo.ts — 장문 운율 붕괴 대책).
+    const chunks = lang === 'ko' ? chunkForSynthesis(spoken) : [spoken];
+
     // ⚠️ generateSpeech 로 바꾸지 말 것: 그 경로의 일반 모델 분기는 네이티브에서
     // dispatchGenerate(text, sid, speed)로 options(extra.lang)를 통째로 버린다(소스 실측
     // 2026-07-07) — 한국어가 영어 발음으로 깨지는 v1.6.2 버그 재발. lang 배선 패치
     // (patches/react-native-sherpa-onnx+0.4.3.patch)는 이 타임스탬프 경로에만 걸려 있다.
-    const audio = await native.generateSpeechWithTimestamps(text, {
-      sid: Number.parseInt(params.voiceId || '0', 10) || 0,
-      speed: sherpaModelSpeed(params.rate),
-      extra: { lang: langOf(params.language) },
-      // 자막 결과는 버린다(sentence 단위 = 최소 비용) — fast 모드는 앞뒤 무음·쉼을 발화로
-      // 깔고 계산한 글자수 비례 추정이라 하이라이트가 수백 ms 어긋났다(Whisper 대조 실측
-      // 2026-07-07). 단어 타임스탬프는 아래 자체 정렬(align.ts)로 계산한다.
-      subtitles: { mode: 'fast', granularity: 'sentence' },
-    });
-    if (state.cancelled) throw new Error('cancelled');
-    if (!audio.samples?.length) throw new Error('오프라인 음성 합성 실패(빈 오디오)');
+    const gen = async (input: string): Promise<{ samples: ArrayLike<number>; sampleRate: number }> => {
+      const audio = await native.generateSpeechWithTimestamps(input, {
+        sid: Number.parseInt(params.voiceId || '0', 10) || 0,
+        speed: sherpaModelSpeed(params.rate),
+        extra: { lang },
+        // 자막 결과는 버린다(sentence 단위 = 최소 비용) — fast 모드는 앞뒤 무음·쉼을 발화로
+        // 깔고 계산한 글자수 비례 추정이라 하이라이트가 수백 ms 어긋났다(Whisper 대조 실측
+        // 2026-07-07). 단어 타임스탬프는 아래 자체 정렬(align.ts)로 계산한다.
+        subtitles: { mode: 'fast', granularity: 'sentence' },
+      });
+      if (state.cancelled) throw new Error('cancelled');
+      if (!audio.samples?.length) throw new Error('오프라인 음성 합성 실패(빈 오디오)');
+      return audio;
+    };
 
     // 원본 44.1kHz 그대로 사용. v1.17 의 22.05kHz 다운샘플은 폐기(2026-07-15) — 값싼 3탭
     // 저역통과가 나이퀴스트(11kHz) 근처 앨리어싱을 통과시켜 "지직거림 + 발음 뭉개짐"을 냈다
     // (제대로 된 폴리페이즈 리샘플이면 그 대역을 −2.7dB 깎지만 3탭은 +0.2dB 로 흘려보냄, 왜곡
     // −30dB — 사용자 보고 + scipy 대조 실측). Whisper CER 은 0% 였지만 그건 "알아들린다"일 뿐
-    // "좋게 들린다"가 아니었다(자기함정). 배터리 이득도 codex 판정상 제한적(진짜 소비원은 80ms
-    // 네이티브 이벤트)이라, 확실한 음질 손상과 맞바꿀 가치가 없었다. 검증된 원본으로 복귀.
-    const rawSamples: ArrayLike<number> = audio.samples;
-    const sampleRate = audio.sampleRate;
+    // "좋게 들린다"가 아니었다(자기함정). 검증된 원본 유지.
+    let rawSamples: ArrayLike<number>;
+    let sampleRate: number;
+    if (chunks.length === 1) {
+      const audio = await gen(chunks[0]);
+      rawSamples = audio.samples;
+      sampleRate = audio.sampleRate;
+    } else {
+      // 절 단위 합성 + 조립: 각 절의 앞뒤 죽은 공기(~0.9s)를 짧은 패드로 다듬고, 이음새에
+      // 쉼표 숨(INTER_CHUNK_PAUSE)을 넣는다. >3× 는 아래 compressSilence 가 이 쉼도 함께
+      // 압축하므로 초고배속의 밀도는 유지된다.
+      const assembled = await this.synthesizeChunks(chunks, gen);
+      rawSamples = assembled.samples;
+      sampleRate = assembled.sampleRate;
+    }
 
     // 무음 처리(smartSpeed.ts):
     // - ≤3×: 앞뒤 무음만 트림(말소리·내부 쉼 불변, 속도 보상 없음) — Supertonic 이 문장마다
@@ -508,8 +579,32 @@ export class SherpaTtsEngine implements TtsEngine {
     }
     // 단어 하이라이트: 최종(트림 후) 샘플에서 발화 구간 위에만 글자수 비례 분배 — 쉼 동안
     // 하이라이트가 전진하지 않고, 무음 오프셋 오차가 원천 제거된다.
-    const boundaries = estimateWordBoundaries(text, samples, sampleRate);
+    let boundaries = estimateWordBoundaries(text, samples, sampleRate);
     if (state.cancelled) throw new Error('cancelled');
+
+    // 숨소리(선택, ≤3× 만): 긴 문장 앞에 사람 낭독자의 들숨을 깐다. 숨은 유성(有聲)이라
+    // 정렬이 발화로 오인하므로, 경계를 "숨 없는" 샘플로 먼저 계산한 뒤 숨 길이만큼 민다.
+    // >3×(스마트 스피드)는 훑어 듣는 속도라 숨이 무의미 + compressSilence 와의 결합이
+    // 정렬을 흐려 제외한다.
+    if (this.breathApplies(text, params)) {
+      try {
+        const b = await gen('<breath>');
+        const breath = trimEdgeSilence(b.samples, sampleRate, BREATH_LEAD_PAD_MS, BREATH_TRAIL_PAD_MS);
+        // 숨 볼륨을 낮춰(은은하게) 말소리와 붙인다. 숨+말 사이 잠깐의 정적.
+        const gapLen = Math.round((sampleRate * BREATH_GAP_MS) / 1000);
+        const merged = new Array<number>(breath.length + gapLen + samples.length);
+        let w = 0;
+        for (let i = 0; i < breath.length; i++) merged[w++] = breath[i] * BREATH_GAIN;
+        for (let i = 0; i < gapLen; i++) merged[w++] = 0;
+        for (let i = 0; i < samples.length; i++) merged[w++] = samples[i];
+        const shiftMs = ((breath.length + gapLen) / sampleRate) * 1000;
+        boundaries = boundaries.map((bd) => ({ ...bd, ms: bd.ms + shiftMs }));
+        samples = merged;
+      } catch {
+        /* 숨 합성 실패는 무해 — 숨 없이 진행(취소 포함) */
+      }
+      if (state.cancelled) throw new Error('cancelled');
+    }
 
     // 네이티브 WAV 저장은 file:// 없는 절대경로, expo-audio 재생은 file:// URI.
     const dir = (cacheDirectory || '').replace(/^file:\/\//, '');
@@ -534,6 +629,36 @@ export class SherpaTtsEngine implements TtsEngine {
     // 불변식: rtf × 설정배속 ≥ 1 이면 재생이 준비를 앞질러 캐시가 마른다.
     recordSynth(Date.now() - synthStart, (samples.length / sampleRate) * 1000);
     return { uri, boundaries, trimFactor };
+  }
+
+  // 절 청크들을 순서대로 합성해 한 문장 파형으로 조립한다(직렬 — 이미 synthChain 안).
+  // 각 절의 앞뒤 죽은 공기(~0.9s)는 짧은 패드로 다듬고 이음새에 쉼표 숨을 넣는다.
+  // 마지막 절 꼬리만 문장 꼬리 패드(TRAIL_PAD_MS)를 유지해, 단일 합성 경로와 같은
+  // 문장 간 숨이 보존되게 한다.
+  private async synthesizeChunks(
+    chunks: string[],
+    gen: (input: string) => Promise<{ samples: ArrayLike<number>; sampleRate: number }>,
+  ): Promise<{ samples: number[]; sampleRate: number }> {
+    const pieces: number[][] = [];
+    let sampleRate = 44100;
+    for (let i = 0; i < chunks.length; i++) {
+      const audio = await gen(chunks[i]);
+      sampleRate = audio.sampleRate;
+      const trail = i === chunks.length - 1 ? TRAIL_PAD_MS : CHUNK_TRAIL_PAD_MS;
+      pieces.push(trimEdgeSilence(audio.samples, sampleRate, LEAD_PAD_MS, trail));
+    }
+    const gap = Math.round((sampleRate * INTER_CHUNK_PAUSE_MS) / 1000);
+    let total = gap * (pieces.length - 1);
+    for (const p of pieces) total += p.length;
+    // 사전 할당 + 인덱스 복사(스프레드/push 금지 — 문장 하나가 수십만 샘플, smartSpeed 와 동일 이유).
+    const out = new Array<number>(total);
+    let w = 0;
+    for (let i = 0; i < pieces.length; i++) {
+      if (i > 0) for (let g = 0; g < gap; g++) out[w++] = 0;
+      const p = pieces[i];
+      for (let j = 0; j < p.length; j++) out[w++] = p[j];
+    }
+    return { samples: out, sampleRate };
   }
 
   private playFile(

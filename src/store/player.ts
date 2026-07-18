@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { TtsEngine } from '../tts/TtsEngine';
 import { getEngine, systemEngine } from '../tts';
 import { sherpaStats, resetSherpaStats } from '../tts/sherpa/stats';
+import { sherpaModelSpeed, sherpaTrimEnabled } from '../tts/sherpa/rate';
 import { contrastEdgeVoice } from '../tts/edge/voices';
 import { splitDialogue, type DialogueSegment } from '../lib/dialogue';
 import { useSettings } from './settings';
@@ -87,6 +88,7 @@ function speakParams(engineId: string, dialogue = false) {
     rate: s.rate,
     pitch: s.pitch,
     language: s.language,
+    breath: engineId === 'sherpa' && s.breathSound,
     voiceId:
       engineId === 'edge' ? s.edgeVoiceId
       : engineId === 'sherpa' ? s.sherpaVoiceId
@@ -141,6 +143,10 @@ function collectUpcoming(
 }
 
 let slowDeviceNoticeShown = false;
+
+// sherpa 선행합성 큐가 마지막으로 적재된 배속 — 근사 라이브 변경으로 다른 합성 구간의 큐를
+// 깔았다가 원래 구간으로 되돌아오는 경우(4×→5×→4×)의 스테일 큐 판정용(교차검증 2026-07-18).
+let sherpaQueueRate = 1;
 
 // 오프라인 합성이 재생 소비를 못 따라가는 상태의 판정(기기 실측 기반 — stats.ts).
 // 조건: 표본이 쌓였고(합성 5건+), 발화 시작 대기가 반복됐고(3회+), 측정된 합성 RTF × 설정
@@ -294,6 +300,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
         const depth = engine.prefetchUnits ?? DEFAULT_PREFETCH_UNITS;
         const upcoming = collectUpcoming(sentences, allSegs, index, si + 1, depth);
         for (const u of upcoming) engine.prefetch?.(u.text, speakParams(engineId, u.dialogue));
+        if (engineId === 'sherpa') sherpaQueueRate = settings.rate;
       }
     };
     speakSegment(0);
@@ -306,9 +313,12 @@ export const usePlayer = create<PlayerState>((set, get) => {
   // 사라진다. 시스템 TTS 는 즉시 발화라 불필요, Edge(온라인)는 재생 의사 없이 연결을 여는
   // 낭비라 제외. 모델 미설치면 prefetch 가 조용히 실패(캐시에서 제거)할 뿐 부작용 없다.
   const WARMUP_UNITS = 8;
-  const warmUp = () => {
-    const { sentences, index } = get();
-    if (!sentences.length) return;
+  // fromIndex 미지정 = 현재 문장부터(로드 시 워밍업). 배속 변경 시엔 index+1 부터(현재 문장은
+  // 이미 재생 중이라 합성 불필요 — 괜히 넣으면 체인 맨 앞을 죽은 합성이 차지한다).
+  const warmUp = (fromIndex?: number) => {
+    const { sentences } = get();
+    const index = fromIndex ?? get().index;
+    if (!sentences.length || index >= sentences.length) return;
     const settings = useSettings.getState();
     const engineId = settings.engineId;
     if (engineId !== 'sherpa') return;
@@ -327,6 +337,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     for (const u of collectUpcoming(sentences, allSegs, index, 0, WARMUP_UNITS)) {
       engine.prefetch(u.text, speakParams(engineId, u.dialogue));
     }
+    sherpaQueueRate = settings.rate;
   };
 
   return {
@@ -421,10 +432,33 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     applyRate: (rate) => {
       if (!get().playing) return;
-      // 현재 울리는 문장에 라이브 적용을 시도 — 성공하면 재합성·침묵 없이 즉시 새 속도.
-      // (sherpa 1×~3× 구간, Edge 는 SSML 몫이 같은 구간(2×↔2.5×↔3×…)에서 성공.)
-      if (activeEngine.setRate?.(rate)) return;
-      // 불가(합성 파라미터가 달라짐) — 현재 문장을 새 배속으로 재발화.
+      // ① 정확 라이브(합성 파라미터가 같은 구간): 끊김 0·품질 그대로 즉시 새 속도.
+      //    (sherpa 1×~3× 구간, Edge 는 SSML 몫이 같은 구간(2×↔2.5×↔3×…)에서 성공.)
+      if (activeEngine.setRate?.(rate)) {
+        // 단, 직전 근사 변경이 다른 합성 구간의 큐를 깔아 둔 채 되돌아온 경우(4×→5×→4×)는
+        // 그 큐의 키가 어긋난 스테일 — 미완료를 비우고 새 배속으로 다시 채운다(교차검증
+        // 발견 2026-07-18: 안 하면 다음 문장에서 키 미스 + 발화 대기 재발).
+        if (
+          activeEngine.id === 'sherpa' &&
+          (sherpaModelSpeed(sherpaQueueRate) !== sherpaModelSpeed(rate) ||
+            sherpaTrimEnabled(sherpaQueueRate) !== sherpaTrimEnabled(rate))
+        ) {
+          activeEngine.cancelPending?.();
+          warmUp(get().index + 1);
+        }
+        return;
+      }
+      // ② 근사 라이브(구간 경계를 넘음 — 3×↔4×+, 1×↔0.5×): 현재 문장 잔여를 근사 스트레치로
+      //    "당장" 새 속도처럼 들리게 한다. 예전의 재발화 폴백은 재합성 침묵(실기기 수 초~수십
+      //    초) + 문장 재시작이라 "배속을 바꿔도 안 바뀐다, 멈췄다 재생해야 바뀐다"로 체감됐다
+      //    (사용자 보고 2026-07-18). 동시에 옛 배속의 미완료 큐를 비우고 다음 문장들을 새
+      //    배속으로 지금부터 합성시켜, 문장 경계에서도 기다림이 없게 한다.
+      if (activeEngine.setRateApprox?.(rate)) {
+        activeEngine.cancelPending?.();
+        warmUp(get().index + 1);
+        return;
+      }
+      // ③ 라이브 수단이 없는 엔진(시스템 등): 현재 문장을 새 배속으로 재발화.
       get().seek(get().index);
     },
 
