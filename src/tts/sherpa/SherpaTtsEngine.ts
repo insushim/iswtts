@@ -8,7 +8,7 @@ import { sherpaModelSpeed, sherpaPlaybackRate, sherpaTrimEnabled } from './rate'
 import { disposePlayer } from '../disposePlayer';
 import { compressSilence, trimEdgeSilence, LEAD_PAD_MS, TRAIL_PAD_MS } from './smartSpeed';
 import { normalizeForSpeech } from './normalizeKo';
-import { chunkForSynthesis } from './chunkKo';
+import { chunkForSynthesis, CHUNK_THRESHOLD } from './chunkKo';
 import { estimateWordBoundaries, type WordBoundary } from './align';
 import { recordSynth, recordStarvation, recordPlaybackProgress } from './stats';
 import { subtitlesVisible, onVisibilityChange } from '../../lib/visibility';
@@ -66,12 +66,9 @@ const SYNTH_TIMEOUT_MS = 60_000;
 // 절 이음새 쉼 = 절 꼬리 80 + 삽입 120 + 절 머리 40(LEAD_PAD_MS) ≈ 240ms(쉼표 숨 관례 수준).
 const INTER_CHUNK_PAUSE_MS = 120;
 const CHUNK_TRAIL_PAD_MS = 80;
-// 숨소리: 이 길이(글자) 이상 문장 앞에만 — 사람 낭독자가 긴 문장 앞에서 숨을 고르는 관례.
-const BREATH_MIN_CHARS = 40;
-const BREATH_GAP_MS = 120; // 숨과 첫 말 사이 정적
-const BREATH_GAIN = 0.5; // 숨은 은은하게(말소리보다 한참 작게)
-const BREATH_LEAD_PAD_MS = 20; // 숨 오디오 자체의 앞뒤 패드(숨은 짧고 즉시 시작돼야 함)
-const BREATH_TRAIL_PAD_MS = 60;
+// 숨소리(breathApplies): 절 분할되는 장문의 가운데 절 머리에 <breath> 태그를 인라인으로
+// 심는다 — 모델이 낭독 흐름 안에서 자연 음량으로 직접 숨쉰다. (v1.22.0 의 "별도 합성 숨을
+// 문장 앞에 부착"은 이물감·과대 음량으로 폐기 — doSynthesize 의 주석 참조.)
 
 // sherpa 빌드의 Supertonic 은 5개 언어만 지원(en/ko/es/pt/fr). lang 미지정 시 네이티브가
 // 영어로 처리해 한국어 발음이 깨지므로(실측 2026-07-06) BCP-47 앞 2자를 매핑해 넘긴다.
@@ -408,12 +405,15 @@ export class SherpaTtsEngine implements TtsEngine {
   // 캐시 키는 합성 파라미터만(재생속도는 재생 시 적용) — 1× 초과 배속끼리는 같은 합성을 재사용.
   // 숨소리가 "실제로" 이 발화에 적용되는가 — keyOf 와 doSynthesize 가 반드시 같은 판정을
   // 써야 한다(키만 갈리고 오디오가 같으면 동일 WAV 를 두 번 합성한다 — 교차검증 지적 2026-07-18).
+  // 조건 = 절 분할이 일어나는 장문(쉼표 있음 + 임계 초과)에만: 숨은 절 경계에 심기 때문.
+  // >3×(스마트 스피드)는 훑어 듣는 속도라 숨 무의미 — 제외.
   private breathApplies(text: string, params: SpeakParams): boolean {
     return (
       !!params.breath &&
       langOf(params.language) === 'ko' &&
       !sherpaTrimEnabled(params.rate) &&
-      text.length >= BREATH_MIN_CHARS
+      text.length > CHUNK_THRESHOLD &&
+      /[,，、;；]/.test(text)
     );
   }
 
@@ -525,6 +525,16 @@ export class SherpaTtsEngine implements TtsEngine {
     // 장문은 절(쉼표) 단위로 나눠 각각 합성 후 이어 붙인다(chunkKo.ts — 장문 운율 붕괴 대책).
     const chunks = lang === 'ko' ? chunkForSynthesis(spoken) : [spoken];
 
+    // 숨소리(선택): 긴 문장의 "가운데 절 머리"에 <breath> 태그를 심어 모델이 낭독 흐름 안에서
+    // 직접 숨쉬게 한다 — 같은 목소리·자연 음량·운율로 녹아든다(실측 2026-07-18: 태그는 발음
+    // 안 됨, +0.4~0.5s 들숨). v1.22.0 의 "따로 합성한 숨을 문장 앞에 붙이기"는 문장 시작 전
+    // "허~" 하는 이물감 + 과대 음량(말소리 −7.6dB)으로 폐기(사용자 실청 피드백). 숨이 절 안에
+    // 있으므로 하이라이트는 그 구간에서 실측 ~0.4s 만큼 잠깐 느긋해졌다 다음 쉼에서 자기 보정.
+    if (this.breathApplies(text, params) && chunks.length > 1) {
+      const mid = Math.floor(chunks.length / 2);
+      chunks[mid] = `<breath> ${chunks[mid]}`;
+    }
+
     // ⚠️ generateSpeech 로 바꾸지 말 것: 그 경로의 일반 모델 분기는 네이티브에서
     // dispatchGenerate(text, sid, speed)로 options(extra.lang)를 통째로 버린다(소스 실측
     // 2026-07-07) — 한국어가 영어 발음으로 깨지는 v1.6.2 버그 재발. lang 배선 패치
@@ -579,32 +589,8 @@ export class SherpaTtsEngine implements TtsEngine {
     }
     // 단어 하이라이트: 최종(트림 후) 샘플에서 발화 구간 위에만 글자수 비례 분배 — 쉼 동안
     // 하이라이트가 전진하지 않고, 무음 오프셋 오차가 원천 제거된다.
-    let boundaries = estimateWordBoundaries(text, samples, sampleRate);
+    const boundaries = estimateWordBoundaries(text, samples, sampleRate);
     if (state.cancelled) throw new Error('cancelled');
-
-    // 숨소리(선택, ≤3× 만): 긴 문장 앞에 사람 낭독자의 들숨을 깐다. 숨은 유성(有聲)이라
-    // 정렬이 발화로 오인하므로, 경계를 "숨 없는" 샘플로 먼저 계산한 뒤 숨 길이만큼 민다.
-    // >3×(스마트 스피드)는 훑어 듣는 속도라 숨이 무의미 + compressSilence 와의 결합이
-    // 정렬을 흐려 제외한다.
-    if (this.breathApplies(text, params)) {
-      try {
-        const b = await gen('<breath>');
-        const breath = trimEdgeSilence(b.samples, sampleRate, BREATH_LEAD_PAD_MS, BREATH_TRAIL_PAD_MS);
-        // 숨 볼륨을 낮춰(은은하게) 말소리와 붙인다. 숨+말 사이 잠깐의 정적.
-        const gapLen = Math.round((sampleRate * BREATH_GAP_MS) / 1000);
-        const merged = new Array<number>(breath.length + gapLen + samples.length);
-        let w = 0;
-        for (let i = 0; i < breath.length; i++) merged[w++] = breath[i] * BREATH_GAIN;
-        for (let i = 0; i < gapLen; i++) merged[w++] = 0;
-        for (let i = 0; i < samples.length; i++) merged[w++] = samples[i];
-        const shiftMs = ((breath.length + gapLen) / sampleRate) * 1000;
-        boundaries = boundaries.map((bd) => ({ ...bd, ms: bd.ms + shiftMs }));
-        samples = merged;
-      } catch {
-        /* 숨 합성 실패는 무해 — 숨 없이 진행(취소 포함) */
-      }
-      if (state.cancelled) throw new Error('cancelled');
-    }
 
     // 네이티브 WAV 저장은 file:// 없는 절대경로, expo-audio 재생은 file:// URI.
     const dir = (cacheDirectory || '').replace(/^file:\/\//, '');

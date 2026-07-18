@@ -649,7 +649,7 @@ export default function SettingsScreen() {
             {s.breathSound ? '☑' : '☐'} 문장 숨소리
           </Text>
           <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 4 }}>
-            사람 낭독자처럼 긴 문장 앞에서 살짝 숨을 쉬어 더 자연스럽게 들려요. (고품질
+            사람 낭독자처럼 긴 문장을 읽는 중간(쉼표 자리)에서 자연스럽게 숨을 쉬어요. (고품질
             오프라인 음성 전용, 3배속 이하에서만)
           </Text>
         </TouchableOpacity>
