@@ -95,6 +95,10 @@ export class SherpaTtsEngine implements TtsEngine {
   // 폴링을 되살리려 하고, 발화마다 구독이 쌓인다).
   private visSub: (() => void) | null = null;
   private currentUri: string | null = null;
+  // 현재 재생 중 문장의 캐시 키·합성 결과 — suspend 시 파일을 캐시로 반환해, 재개할 때 같은
+  // 문장이 재합성 없이(캐시 히트) 즉시 시작되게 한다.
+  private currentKey: string | null = null;
+  private currentSynth: Synth | null = null;
   private pendingSynth: CacheEntry | null = null;
   private cache = new Map<string, CacheEntry>();
   // 현재 재생 중 오디오의 합성 파라미터 — setRate 라이브 적용 가능 판정용.
@@ -106,6 +110,7 @@ export class SherpaTtsEngine implements TtsEngine {
     const myGen = ++this.playGen;
     this.teardownPlayback();
     const key = this.keyOf(text, params);
+    this.currentKey = key;
     let entry = this.cache.get(key);
     if (entry) {
       this.cache.delete(key); // 소비: 파일 소유권을 재생 쪽으로 이전(선행합성 히트 = 부드러운 자동진행)
@@ -114,10 +119,13 @@ export class SherpaTtsEngine implements TtsEngine {
       // 인스턴스라 1건씩 직렬이고 FIFO 라, 큐에 이미 쌓인 선행합성(미래 문장)이 이 문장보다 앞서
       // 있으면 재생이 그 뒤에서 수십 초~수 분을 기다린다 = "배속 바꾸면 멈춤"의 진짜 원인(실측
       // 2026-07-16: 재생 중 −/+ 로 배속을 빠르게 오르내리면 재발화가 겹치며 선행합성이 현재 문장
-      // 앞을 막아 ~80s+ 정지). 그래서 지금 큐에 있는 선행합성을 전부 취소하고(취소분은 doSynthesize
-      // 진입 즉시 throw 되어 체인이 곧장 다음으로 넘어감) 이 문장을 최우선으로 만든다. 미래분은 아래
-      // prefetch 루프가 곧바로 다시 채운다. 정상 자동진행은 항상 캐시 히트라 이 경로를 타지 않는다.
-      this.clearCache();
+      // 앞을 막아 ~80s+ 정지). 그래서 큐에서 "아직 안 끝난" 선행합성만 전부 취소하고(취소분은
+      // doSynthesize 진입 즉시 throw 되어 체인이 곧장 다음으로 넘어감) 이 문장을 최우선으로 만든다.
+      // 이미 완료된 선행합성(파일)은 체인을 막지 않으므로 남긴다(2026-07-18) — 뒤로 seek·일시정지
+      // 후 재개 때 애써 만든 앞 버퍼를 태우고 0에서 다시 쌓는 낭비(그 자체가 초반 리듬 흔들림)를
+      // 없앤다. 미래분은 아래 prefetch 루프가 곧바로 다시 채운다. 정상 자동진행은 항상 캐시 히트라
+      // 이 경로를 타지 않는다.
+      this.cancelUnfinished();
       entry = this.makeSynth(text, params);
     }
     this.pendingSynth = entry;
@@ -220,6 +228,55 @@ export class SherpaTtsEngine implements TtsEngine {
     this.playGen++;
     this.teardownPlayback();
     this.clearCache();
+  }
+
+  // 일시정지 전용 정지(2026-07-18): 재생·진행 중 합성만 내리고, **완료된 선행합성(파일)은
+  // 남긴다** — 재개가 캐시 히트로 시작해 버퍼가 따뜻하다(정지할 때마다 파이프라인을 0에서
+  // 다시 쌓는 초반 리듬 흔들림 제거). 현재 문장 파일도 캐시로 반환해 재개 첫 문장이 즉시 나온다.
+  // 남는 건 디스크 파일뿐: 미완료 합성은 취소하고(큐 대기분은 즉시 소멸, 인플라이트 1건은
+  // 중단 API 가 없어 마저 돌고 결과만 폐기), 프리로드 플레이어(네이티브 자원)도 해제한다.
+  // 완전 정지(엔진 전환·에러·책 끝·언로드·모델 삭제)는 여전히 stop().
+  suspend(): void {
+    this.playGen++;
+    this.recacheCurrent();
+    this.teardownPlayback();
+    for (const [k, e] of this.cache) {
+      if (e.synth) releasePreload(e);
+      else {
+        this.cache.delete(k);
+        e.cancel();
+      }
+    }
+  }
+
+  // 현재 재생 중 문장의 파일을 캐시에 되돌린다(suspend 전용). teardownPlayback 의 파일 삭제를
+  // 피하려고 소유권(currentUri)을 캐시 엔트리로 넘긴다.
+  private recacheCurrent(): void {
+    const key = this.currentKey;
+    const synth = this.currentSynth;
+    if (!key || !synth || !this.currentUri) return;
+    // 같은 키(반복 문장: "네." 등)가 이미 캐시에 있을 때 — 완료본이면 그걸 쓰면 되니 현재
+    // 파일은 teardown 이 정리하게 두고, 미완료면 취소하고 현재 완료 파일로 대체한다(안 하면
+    // suspend 루프가 그 미완료를 지워 "재개 시 현재 문장 캐시 히트" 보장이 깨짐 — 교차검증
+    // 발견 2026-07-18).
+    const prev = this.cache.get(key);
+    if (prev?.synth) return;
+    if (prev) {
+      this.cache.delete(key);
+      prev.cancel();
+    }
+    this.currentUri = null;
+    const entry: CacheEntry = {
+      promise: Promise.resolve(synth),
+      synth,
+      cancel: () => {
+        entry.disposed = true;
+        releasePreload(entry);
+        deleteAsync(synth.uri, { idempotent: true }).catch(() => { /* noop */ });
+      },
+    };
+    this.cache.set(key, entry); // Map 뒤(최신) 삽입 — evict 는 오래된 것부터 지우므로 안전
+    this.evict();
   }
 
   // 재생 중 배속 라이브 변경. 합성은 자연속도 고정이라(≤3×: 모델 speed=1·무음압축 off)
@@ -356,6 +413,15 @@ export class SherpaTtsEngine implements TtsEngine {
     this.cache.clear();
   }
 
+  // 아직 완료되지 않은(체인을 점유할 수 있는) 합성만 취소 — 완료된 파일은 남긴다.
+  private cancelUnfinished(): void {
+    for (const [k, e] of this.cache) {
+      if (e.synth) continue;
+      this.cache.delete(k);
+      e.cancel();
+    }
+  }
+
   private teardownPlayback(): void {
     if (this.pendingSynth) {
       this.pendingSynth.cancel();
@@ -368,6 +434,8 @@ export class SherpaTtsEngine implements TtsEngine {
     this.currentModelSpeed = null;
     this.currentTrimEnabled = null;
     this.currentTrimFactor = 1;
+    this.currentKey = null;
+    this.currentSynth = null;
     if (this.currentUri) {
       const u = this.currentUri;
       this.currentUri = null;
@@ -477,6 +545,7 @@ export class SherpaTtsEngine implements TtsEngine {
   ): void {
     try {
       this.currentUri = synth.uri;
+      this.currentSynth = synth;
       this.currentModelSpeed = sherpaModelSpeed(params.rate);
       this.currentTrimEnabled = sherpaTrimEnabled(params.rate);
       this.currentTrimFactor = synth.trimFactor;

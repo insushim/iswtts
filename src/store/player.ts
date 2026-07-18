@@ -120,6 +120,26 @@ function segsOf(sentences: string[]): DialogueSegment[][] {
   return segCache;
 }
 
+// fromSentence 문장의 fromSeg 세그먼트부터 depth 개의 발화 유닛을 순서대로 수집.
+// 재생 중 prefetch 와 로드 시 워밍업이 이 순회를 공유한다 — 같은 로직이 두 곳에 갈라져
+// 한쪽만 고쳐지는 사고 방지(교차검증 지적 2026-07-18).
+function collectUpcoming(
+  sentences: string[],
+  allSegs: DialogueSegment[][] | null,
+  fromSentence: number,
+  fromSeg: number,
+  depth: number,
+): DialogueSegment[] {
+  const upcoming: DialogueSegment[] = [];
+  for (let n = fromSentence; n < sentences.length && upcoming.length < depth; n++) {
+    const nsegs = allSegs?.[n] ?? [{ text: sentences[n], start: 0, dialogue: false }];
+    for (let k = n === fromSentence ? fromSeg : 0; k < nsegs.length && upcoming.length < depth; k++) {
+      upcoming.push(nsegs[k]);
+    }
+  }
+  return upcoming;
+}
+
 let slowDeviceNoticeShown = false;
 
 // 오프라인 합성이 재생 소비를 못 따라가는 상태의 판정(기기 실측 기반 — stats.ts).
@@ -272,20 +292,41 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
       if (!fellBack) {
         const depth = engine.prefetchUnits ?? DEFAULT_PREFETCH_UNITS;
-        const upcoming: DialogueSegment[] = [];
-        for (let k = si + 1; k < segs.length && upcoming.length < depth; k++) {
-          upcoming.push(segs[k]);
-        }
-        for (let n = index + 1; n < sentences.length && upcoming.length < depth; n++) {
-          const nsegs = allSegs?.[n] ?? [{ text: sentences[n], start: 0, dialogue: false }];
-          for (let k = 0; k < nsegs.length && upcoming.length < depth; k++) {
-            upcoming.push(nsegs[k]);
-          }
-        }
+        const upcoming = collectUpcoming(sentences, allSegs, index, si + 1, depth);
         for (const u of upcoming) engine.prefetch?.(u.text, speakParams(engineId, u.dialogue));
       }
     };
     speakSegment(0);
+  };
+
+  // 문서를 연 순간부터 현재 위치의 앞 몇 문장을 미리 합성(오프라인 신경망 엔진만) —
+  // 사용자가 ▶ 를 누르기 전 화면을 보는 몇 초가 공짜 워밍업 시간이다(2026-07-18 "좀더
+  // 앞에서부터"). 효과 둘: ① ▶ 즉시 첫 문장 시작(현재 문장 포함이라 캐시 히트) ② 재생이
+  // 여유 버퍼를 갖고 출발해 초반(버퍼가 아직 안 쌓인 구간)의 발화 대기 편차 = 리듬 흔들림이
+  // 사라진다. 시스템 TTS 는 즉시 발화라 불필요, Edge(온라인)는 재생 의사 없이 연결을 여는
+  // 낭비라 제외. 모델 미설치면 prefetch 가 조용히 실패(캐시에서 제거)할 뿐 부작용 없다.
+  const WARMUP_UNITS = 8;
+  const warmUp = () => {
+    const { sentences, index } = get();
+    if (!sentences.length) return;
+    const settings = useSettings.getState();
+    const engineId = settings.engineId;
+    if (engineId !== 'sherpa') return;
+    if (Date.now() < (engineBlockedUntil[engineId] || 0)) return; // 서킷 열림 중엔 시도 안 함
+    const engine = getEngine(engineId);
+    if (!engine.prefetch) return;
+    // ⚠️ 워밍업이 합성 큐를 쥐는 순간 이 엔진이 "파이프라인을 쥔 엔진"이다 — activeEngine 으로
+    // 등록해야 load/pause 의 suspend·stop 이 이 큐를 정리할 수 있다. 안 하면 "문서 A 열기(재생
+    // 안 함) → 목록 → 문서 B 열기 → ▶" 에서 A 의 미완료 워밍업이 어느 정지 경로에도 안 걸린 채
+    // B 첫 문장 합성 앞을 막는 FIFO 클로그가 재현된다(교차검증 발견 2026-07-18).
+    if (activeEngine !== engine) {
+      activeEngine.stop();
+      activeEngine = engine;
+    }
+    const allSegs = settings.dialogueVoice ? segsOf(sentences) : null;
+    for (const u of collectUpcoming(sentences, allSegs, index, 0, WARMUP_UNITS)) {
+      engine.prefetch(u.text, speakParams(engineId, u.dialogue));
+    }
   };
 
   return {
@@ -300,7 +341,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
     setNotice: (msg) => set({ notice: msg }),
 
     load: ({ docId, title, sentences, startIndex = 0 }) => {
-      activeEngine.stop();
+      // suspend(지원 엔진): 같은 문서를 다시 열었을 때(이어듣기) 직전에 만들어 둔 선행합성이
+      // 그대로 살아 즉시 이어진다. 다른 문서의 잔존 캐시는 키가 안 맞아 그냥 지나가고,
+      // 워밍업·prefetch 가 새 항목을 넣으며 자연 축출된다(엔진 MAX_CACHE 상한).
+      if (activeEngine.suspend) activeEngine.suspend();
+      else activeEngine.stop();
       epoch++;
       // 진단은 "지금 읽는 이 책"의 것이어야 한다 — 앱을 켠 이후 평생 누적이면 오래된 표본이
       // 현재 기기 상태를 희석한다(교차검증 지적 2026-07-13). 느린 기기 안내도 다시 무장.
@@ -317,6 +362,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
         playing: false,
         notice: null, // 이전 문서의 알림이 새 문서에 남지 않게
       });
+      // ▶ 를 누르기 전부터 현재 위치의 앞 문장들을 미리 합성해 둔다(오프라인 엔진만).
+      warmUp();
     },
 
     play: () => {
@@ -328,7 +375,14 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     pause: () => {
       epoch++; // 진행 중 콜백 무효화
-      activeEngine.stop();
+      // suspend(지원 엔진): 완료된 선행합성 버퍼를 보존한 채 정지 — 재개가 캐시 히트로 즉시
+      // 시작되고, 정지 때마다 버퍼를 0에서 다시 쌓느라 생기던 초반 리듬 흔들림이 없어진다.
+      // 미완료 합성은 취소된다(인플라이트 1건만 마저 돌고 폐기). 트레이드오프(의도): 화면
+      // 이탈도 이 경로라 완료 WAV(상한 24개 ≈ 24MB)가 앱 프로세스 생존 동안 캐시 디렉토리에
+      // 남는다 — OS 정리 가능 위치 + 다음 기동 시 sweepCache 청소라 수용(이어듣기 즉시 재개
+      // 이득이 더 큼).
+      if (activeEngine.suspend) activeEngine.suspend();
+      else activeEngine.stop();
       set({ playing: false });
       // 일시정지 = 배터리도 쉬어야 한다(사용자 2026-07-16 "일시정지하면 배터리 안 먹는 게 낫지").
       // pauseMediaSession 은 앵커만 멈추고 mediaPlayback 포그라운드 서비스는 살려둬(잠금화면 재개

@@ -32,9 +32,12 @@ export interface TtsEngine {
   readonly prefetchUnits?: number;
   speak(text: string, params: SpeakParams, handlers: SpeakHandlers): void;
   stop(): void;
+  // 선택: 일시정지 전용 정지 — 재생·진행 중 합성만 내리고 완료된 선행합성(파일)은 보존해,
+  // 재개가 캐시 히트로 즉시·부드럽게 시작되게 한다(sherpa). 미구현 엔진은 stop() 폴백.
+  suspend?(): void;
   getVoices(): Promise<EngineVoice[]>;
-  // 선택: 다음에 읽을 문장을 미리 합성해 둔다(온라인 엔진의 문장 간 딜레이 제거용).
-  // 지원 엔진(Edge)만 구현. 시스템 엔진은 즉시 발화라 불필요.
+  // 선택: 다음에 읽을 문장을 미리 합성해 둔다(문장 간 딜레이 제거 + 오프라인 파이프라인
+  // 버퍼). Edge·sherpa 가 구현, 시스템 엔진은 즉시 발화라 불필요.
   prefetch?(text: string, params: SpeakParams): void;
   // 선택: 재생 중 배속을 문장 재발화 없이 즉시 반영. 현재 문장의 합성 파라미터가 새 배속과
   // 호환될 때만 가능(true 반환). false 면 호출부가 재발화로 폴백한다.
