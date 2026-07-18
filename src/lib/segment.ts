@@ -22,31 +22,53 @@ function hardWrap(s: string): string[] {
   return out;
 }
 
-export function segmentSentences(raw: string): string[] {
-  if (!raw) return [];
+export type SegmentedDoc = {
+  sentences: string[];
+  /** 문단을 새로 시작하는 문장 인덱스들(0 = 첫 문단). 낭독 페이스(pacing.ts)가 문단 전환
+   *  호흡에 쓴다. 원문 텍스트는 저장하지 않으므로 여기서 계산해 문서와 함께 보존해야 한다. */
+  paraStarts: number[];
+};
+
+export function segmentDocument(raw: string): SegmentedDoc {
+  if (!raw) return { sentences: [], paraStarts: [] };
   // 개행/공백 정규화 (단, 문단 경계는 살린다)
   const text = raw
     .replace(/\r\n?/g, '\n')
     .replace(/[ \t ]+/g, ' ')
     .replace(/\n{2,}/g, '\n\n');
 
-  const paragraphs = text.split(/\n/);
+  // 문단 = 빈 줄(\n\n) 경계만. 단일 개행은 하드랩(80자 접기 등)일 수 있어 문단으로 치지
+  // 않는다 — 매 줄이 문단이 되면 낭독 페이스의 문단 호흡(+350ms)이 줄마다 붙는 역효과.
+  // (문장 분할 자체는 종전대로 줄 단위 — 줄을 넘나드는 문장 결합은 하지 않는다.)
+  const blocks = text.split(/\n\n/);
   const sentences: string[] = [];
+  const paraStarts: number[] = [];
 
   // 문장 종결부호(라틴/한중일) + 뒤따르는 닫는 인용부호를 포함해 분할
   const splitter = /(?<=[.!?。！？…]["'”’)\]]?)\s+/;
 
-  for (const para of paragraphs) {
-    const p = para.trim();
-    if (!p) continue;
-    const parts = p.split(splitter);
-    for (const part of parts) {
-      const s = part.trim();
-      if (!s) continue;
-      for (const chunk of hardWrap(s)) {
-        if (chunk) sentences.push(chunk);
+  for (const block of blocks) {
+    let blockStarted = false;
+    for (const line of block.split('\n')) {
+      const p = line.trim();
+      if (!p) continue;
+      if (!blockStarted) {
+        paraStarts.push(sentences.length);
+        blockStarted = true;
+      }
+      const parts = p.split(splitter);
+      for (const part of parts) {
+        const s = part.trim();
+        if (!s) continue;
+        for (const chunk of hardWrap(s)) {
+          if (chunk) sentences.push(chunk);
+        }
       }
     }
   }
-  return sentences;
+  return { sentences, paraStarts };
+}
+
+export function segmentSentences(raw: string): string[] {
+  return segmentDocument(raw).sentences;
 }

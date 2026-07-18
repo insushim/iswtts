@@ -13,6 +13,7 @@ import {
   setRemoteHandlers,
 } from '../lib/mediaSession';
 import { promptBgReliabilityOnce } from '../lib/batteryOpt';
+import { sentenceGapMs, MIN_TIMER_MS } from '../lib/pacing';
 import { startBgSound } from '../lib/bgSound';
 
 // 재생 컨트롤러. 문장 큐를 순회하며 엔진에 발화시키고, onBoundary로 단어 하이라이트를 갱신한다.
@@ -54,6 +55,8 @@ export type PlayerState = {
   docId: string | null;
   title: string;
   sentences: string[];
+  // 문단을 새로 시작하는 문장 인덱스(낭독 페이스 — pacing.ts 문단 호흡). 구문서는 빈 Set.
+  paraStarts: Set<number>;
   index: number;
   wordStart: number;
   wordLen: number;
@@ -66,6 +69,7 @@ export type PlayerState = {
     docId: string;
     title: string;
     sentences: string[];
+    paraStarts?: number[];
     startIndex?: number;
   }) => void;
   play: () => void;
@@ -214,8 +218,28 @@ export const usePlayer = create<PlayerState>((set, get) => {
       if (!fellBack && engineId !== 'system') engineFails[engineId] = 0;
       const st = get();
       if (st.index < st.sentences.length - 1) {
-        set({ index: st.index + 1 });
-        speakCurrent();
+        const nextIndex = st.index + 1;
+        // 낭독 페이스 자연화(pacing.ts): 자동진행에만 문맥 비례 쉼을 얹는다 — 문단 전환·
+        // 말줄임·대화문 beat·긴 문장 회복 + 미세 변주. 고품질 오프라인(sherpa) 낭독 전용
+        // (다른 엔진은 자체 발화 텀이 이미 김). 수동 넘김(next/prev/seek)은 즉시 반응 유지.
+        const gap =
+          !fellBack && engineId === 'sherpa'
+            ? sentenceGapMs(st.sentences[st.index], st.sentences[nextIndex], {
+                paragraphBreak: st.paraStarts.has(nextIndex),
+                rate: useSettings.getState().rate,
+              })
+            : 0;
+        // 인덱스는 쉼 "시작" 시점에 올리고 발화만 지연한다 — 콜백 안에서 올리면 쉼 중
+        // 일시정지/화면 이탈 시 index 가 직전 문장에 남아 재개할 때 다 들은 문장을 반복
+        // 재생한다(교차검증 CRITICAL 2026-07-18). 하이라이트는 리셋(다음 문장 대기 상태).
+        set({ index: nextIndex, wordStart: 0, wordLen: 0 });
+        // 쉼 동안의 정지/이탈/수동 이동은 epoch 로 무효화(뒤늦은 발화 차단).
+        if (gap <= MIN_TIMER_MS) speakCurrent();
+        else
+          setTimeout(() => {
+            if (myEpoch !== epoch) return;
+            speakCurrent();
+          }, gap);
       } else {
         // 책 끝 = 완전 종료. 재생 엔진과 미디어 세션을 모두 내린다. 앵커(무음 루프)만 멈추면
         // setActiveForLockScreen(true) 로 등록된 mediaPlayback 포그라운드
@@ -344,6 +368,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     docId: null,
     title: '',
     sentences: [],
+    paraStarts: new Set<number>(),
     index: 0,
     wordStart: 0,
     wordLen: 0,
@@ -351,7 +376,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     notice: null,
     setNotice: (msg) => set({ notice: msg }),
 
-    load: ({ docId, title, sentences, startIndex = 0 }) => {
+    load: ({ docId, title, sentences, paraStarts, startIndex = 0 }) => {
       // suspend(지원 엔진): 같은 문서를 다시 열었을 때(이어듣기) 직전에 만들어 둔 선행합성이
       // 그대로 살아 즉시 이어진다. 다른 문서의 잔존 캐시는 키가 안 맞아 그냥 지나가고,
       // 워밍업·prefetch 가 새 항목을 넣으며 자연 축출된다(엔진 MAX_CACHE 상한).
@@ -367,6 +392,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
         docId,
         title,
         sentences,
+        paraStarts: new Set(paraStarts || []),
         index: Math.max(0, Math.min(startIndex, Math.max(0, sentences.length - 1))),
         wordStart: 0,
         wordLen: 0,
@@ -485,6 +511,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
         docId: null,
         title: '',
         sentences: [],
+        paraStarts: new Set<number>(),
         index: 0,
         wordStart: 0,
         wordLen: 0,

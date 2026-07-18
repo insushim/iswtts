@@ -80,7 +80,7 @@ export default function PlayerScreen({ route, navigation }: Props) {
   const fontScale = useSettings((s) => s.fontScale);
   const rate = useSettings((s) => s.rate);
   const setSettings = useSettings((s) => s.set);
-  const loadSentences = useLibrary((s) => s.loadSentences);
+  const loadDoc = useLibrary((s) => s.loadDoc);
   const docs = useLibrary((s) => s.docs);
   const [loading, setLoading] = useState(true);
   // 진행 바 스크럽 상태: 드래그 중인 목표 위치(0..1). null = 드래그 아님(실제 진행률 표시).
@@ -93,12 +93,13 @@ export default function PlayerScreen({ route, navigation }: Props) {
     (async () => {
       try {
         const doc = docs.find((d) => d.id === docId);
-        const sentences = await loadSentences(docId);
+        const { sentences, paraStarts } = await loadDoc(docId);
         if (!alive) return;
         usePlayer.getState().load({
           docId,
           title: doc?.title || '읽기',
           sentences,
+          paraStarts,
           startIndex: doc?.lastIndex ?? 0,
         });
       } catch (e: any) {
