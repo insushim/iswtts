@@ -86,3 +86,22 @@ describe('estimateWordBoundaries — 발화 구간 위 글자수 비례 분배',
     expect(b).toHaveLength(2); // 전체 무음 폴백 — 균등 분배라도 반환
   });
 });
+
+describe('breathy 모드 — 들숨(저진폭)을 쉼으로 분류', () => {
+  test('말소리 4% 진폭의 200ms 구간: 기본은 발화, breathy 는 쉼', () => {
+    const sr = 44100;
+    const x: number[] = [];
+    const push = (ms: number, amp: number) => {
+      for (let i = 0; i < (sr * ms) / 1000; i++) x.push(amp * (i % 2 === 0 ? 1 : -1));
+    };
+    push(500, 0.3); // 말소리
+    push(200, 0.013); // 들숨(실측 진폭)
+    push(500, 0.3); // 말소리
+    const plain = estimateWordBoundaries('앞말 뒷말', x, sr);
+    const breathy = estimateWordBoundaries('앞말 뒷말', x, sr, { breathy: true });
+    // breathy: 두 번째 단어가 들숨이 끝난 뒤(≥700ms)에 정렬된다.
+    expect(breathy[1].ms).toBeGreaterThanOrEqual(690);
+    // 기본 문턱: 들숨이 발화로 취급돼 두 번째 단어가 들숨 구간 안(<700ms)에서 시작한다.
+    expect(plain[1].ms).toBeLessThan(690);
+  });
+});

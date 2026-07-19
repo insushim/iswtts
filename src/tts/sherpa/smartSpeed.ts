@@ -33,8 +33,15 @@ export type CompressedAudio = {
   mapMs: (ms: number) => number;
 };
 
+// 무음 판정 문턱 오버라이드(단어 정렬의 "숨소리 모드"용 — 트림·압축 경로는 기본값 고정).
+export type QuietThresh = { rel: number; floor: number; cap: number };
+
 // 무음 창 연속 구간(최소 길이 필터 없음) — 압축·앞뒤 트림·단어 정렬(align.ts)의 공용 기반.
-export function quietRuns(samples: ArrayLike<number>, sampleRate: number): QuietRun[] {
+export function quietRuns(
+  samples: ArrayLike<number>,
+  sampleRate: number,
+  thresh?: QuietThresh,
+): QuietRun[] {
   const n = samples.length;
   const hop = Math.max(1, Math.round((sampleRate * HOP_MS) / 1000));
   const nWin = Math.ceil(n / hop);
@@ -52,12 +59,13 @@ export function quietRuns(samples: ArrayLike<number>, sampleRate: number): Quiet
     winPeak[w] = p;
     if (p > globalPeak) globalPeak = p;
   }
-  const thresh = Math.min(THRESH_CAP, Math.max(THRESH_FLOOR, globalPeak * THRESH_REL));
+  const t = thresh ?? { rel: THRESH_REL, floor: THRESH_FLOOR, cap: THRESH_CAP };
+  const th = Math.min(t.cap, Math.max(t.floor, globalPeak * t.rel));
 
   const runs: QuietRun[] = [];
   let runStart = -1;
   for (let w = 0; w <= nWin; w++) {
-    const quiet = w < nWin && winPeak[w] <= thresh;
+    const quiet = w < nWin && winPeak[w] <= th;
     if (quiet && runStart < 0) runStart = w;
     if (!quiet && runStart >= 0) {
       runs.push({ s: runStart * hop, e: Math.min(n, w * hop) });

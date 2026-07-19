@@ -11,13 +11,15 @@ describe('injectBreathInline', () => {
     );
   });
 
-  test('경계가 여럿이면 가운데 경계에 심는다', () => {
-    expect(injectBreathInline('하나, 둘, 셋, 넷을 세었다.')).toBe(
-      '하나, 둘, <breath> 셋, 넷을 세었다.',
-    );
-    // 짝수 개면 뒤쪽 경계(사람은 문장 후반에서 숨이 모자란다).
+  test('경계가 여럿이면 모든 유효 경계에 심는다(v1.24.0 — 쉼표마다 숨)', () => {
     expect(injectBreathInline('문을 열자, 바람이 불어와, 촛불이 흔들렸다.')).toBe(
-      '문을 열자, 바람이 불어와, <breath> 촛불이 흔들렸다.',
+      '문을 열자, <breath> 바람이 불어와, <breath> 촛불이 흔들렸다.',
+    );
+  });
+
+  test('짧은 후속 절(열거)은 건너뛴다 — 헐떡임 방지', () => {
+    expect(injectBreathInline('하나, 둘, 셋, 넷을 세었다.')).toBe(
+      '하나, 둘, 셋, <breath> 넷을 세었다.',
     );
   });
 

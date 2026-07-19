@@ -10,7 +10,7 @@
 // 비례로 분배한다 — 쉼 동안 하이라이트가 전진하지 않고, 쉼 직후 단어는 발화 재개 지점에
 // 정렬된다. (한국어는 음절 길이가 비교적 균일해 글자 수 비례가 잘 맞는다.)
 
-import { quietRuns } from './smartSpeed';
+import { quietRuns, type QuietThresh } from './smartSpeed';
 
 export type WordBoundary = { ms: number; charIndex: number; charLen: number };
 
@@ -20,10 +20,19 @@ export type WordBoundary = { ms: number; charIndex: number; charLen: number };
 // 나누면 실청감 ~30ms 라 정지 표시가 무의미). ≤3× 경로는 내부 쉼이 보존돼 정상 작동.
 const PAUSE_MIN_MS = 120;
 
+// 숨소리 모드 무음 문턱: 들숨의 피크는 말소리의 ~4%(실측 2026-07-19: 0.013 vs 0.319)라
+// 기본 문턱(2%, cap 0.02)으로는 "발화"로 오인돼 하이라이트가 숨 구간만큼 앞서갔다.
+// 문턱을 6%로 올리면 들숨(≥120ms)이 쉼으로 분류돼 하이라이트가 숨에서 멈췄다 재개된다.
+// 약한 마찰음이 순간적으로 이 문턱 아래로 내려가도 120ms 미만이라 쉼이 되지 않는다.
+// cap 0.05: 고음량 문장(peak→1.0)에서도 들숨(peak 의 ~4%)이 cap 아래에 남아 쉼으로
+// 분류된다(cap 0.03 이면 peak>0.75 부터 미검출 — 교차검증 지적 2026-07-19).
+const BREATHY_THRESH: QuietThresh = { rel: 0.06, floor: 0.006, cap: 0.05 };
+
 export function estimateWordBoundaries(
   text: string,
   samples: ArrayLike<number>,
   sampleRate: number,
+  opts?: { breathy?: boolean },
 ): WordBoundary[] {
   // 단어(공백 구분)와 문장 내 오프셋. 가중치 = 낱자 수(구두점뿐인 토큰은 소량).
   // 공백 없는 긴 토큰(숫자열·미정제 텍스트)은 4자 단위로 쪼갠다 — 안 쪼개면 그 구간 내내
@@ -55,7 +64,9 @@ export function estimateWordBoundaries(
 
   // 발화 구간 = 긴 무음의 여집합.
   const minPause = (sampleRate * PAUSE_MIN_MS) / 1000;
-  const pauses = quietRuns(samples, sampleRate).filter((r) => r.e - r.s >= minPause);
+  const pauses = quietRuns(samples, sampleRate, opts?.breathy ? BREATHY_THRESH : undefined).filter(
+    (r) => r.e - r.s >= minPause,
+  );
   const speech: Array<{ s: number; e: number }> = [];
   let pos = 0;
   for (const r of pauses) {

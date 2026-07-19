@@ -58,3 +58,20 @@ describe('스마트 스피드(무음 압축) 연동', () => {
     expect(sherpaPlaybackRate(4, 0.5)).toBeCloseTo(sherpaPlaybackRate(4), 5);
   });
 });
+
+describe('sherpaTempoComp — 짧은 문장 템포 평준화(v1.24.0)', () => {
+  const { sherpaTempoComp } = require('../tts/sherpa/rate');
+  test('긴 문장(35음절+)은 보정 없음, 짧을수록 0.88 까지 감속', () => {
+    expect(sherpaTempoComp('가'.repeat(40))).toBe(1);
+    expect(sherpaTempoComp('가'.repeat(35))).toBe(1);
+    expect(sherpaTempoComp('가'.repeat(12))).toBeCloseTo(0.88, 5);
+    expect(sherpaTempoComp('짧다.')).toBeCloseTo(0.88, 5);
+    const mid = sherpaTempoComp('가'.repeat(24));
+    expect(mid).toBeGreaterThan(0.88);
+    expect(mid).toBeLessThan(1);
+  });
+  test('음절 수는 한글만 센다(숫자·구두점 무관)·결정적', () => {
+    const s = '삼십 년 동안, 하루도 빠짐없이 지켜 온 자리를 오늘만큼은 낯설게 느꼈다.';
+    expect(sherpaTempoComp(s)).toBe(sherpaTempoComp(s));
+  });
+});

@@ -13,7 +13,8 @@ import {
   setRemoteHandlers,
 } from '../lib/mediaSession';
 import { promptBgReliabilityOnce } from '../lib/batteryOpt';
-import { sentenceGapMs, MIN_TIMER_MS } from '../lib/pacing';
+import { sentenceGapMs } from '../lib/pacing';
+import { playGap, GAP_MIN_MS } from '../lib/gapPlayer';
 import { startBgSound } from '../lib/bgSound';
 
 // 재생 컨트롤러. 문장 큐를 순회하며 엔진에 발화시키고, onBoundary로 단어 하이라이트를 갱신한다.
@@ -172,7 +173,26 @@ function maybeWarnSlowDevice(rate: number): void {
 const DEFAULT_PREFETCH_UNITS = 3;
 
 export const usePlayer = create<PlayerState>((set, get) => {
+  // 문장 사이 "쉼"(pacing.ts) 진행 상태. 쉼은 무음 재생(gapPlayer)으로 구현 — JS 타이머는
+  // 화면 꺼짐/백그라운드에서 얼어붙어 낭독이 멈춘다(v1.23.0 회귀 실측 2026-07-19).
+  // 쉼 동안 index 는 이전 문장에 남긴다(하이라이트 조기 점프 방지). 대신 여기 nextIndex 를
+  // 들고 있다가 일시정지/이탈 시 확정해, 재개가 "다 들은 문장 반복"이 되는 레이스를 막는다
+  // (교차검증 CRITICAL 2026-07-18).
+  let pendingGap: { cancel: () => void; nextIndex: number } | null = null;
+  const clearPendingGap = (commit: boolean) => {
+    if (!pendingGap) return;
+    const { cancel, nextIndex } = pendingGap;
+    pendingGap = null;
+    cancel();
+    if (commit) {
+      set({ index: nextIndex, wordStart: 0, wordLen: 0 });
+      const { docId, sentences } = get();
+      if (docId) useLibrary.getState().setProgress(docId, nextIndex, sentences.length);
+    }
+  };
+
   const speakCurrent = () => {
+    clearPendingGap(false); // 새 발화가 예약된 쉼을 대체(수동 이동·재발화 등)
     const { sentences, index, docId } = get();
     if (!sentences.length || index < 0 || index >= sentences.length) return;
 
@@ -229,17 +249,20 @@ export const usePlayer = create<PlayerState>((set, get) => {
                 rate: useSettings.getState().rate,
               })
             : 0;
-        // 인덱스는 쉼 "시작" 시점에 올리고 발화만 지연한다 — 콜백 안에서 올리면 쉼 중
-        // 일시정지/화면 이탈 시 index 가 직전 문장에 남아 재개할 때 다 들은 문장을 반복
-        // 재생한다(교차검증 CRITICAL 2026-07-18). 하이라이트는 리셋(다음 문장 대기 상태).
-        set({ index: nextIndex, wordStart: 0, wordLen: 0 });
-        // 쉼 동안의 정지/이탈/수동 이동은 epoch 로 무효화(뒤늦은 발화 차단).
-        if (gap <= MIN_TIMER_MS) speakCurrent();
-        else
-          setTimeout(() => {
+        if (gap < GAP_MIN_MS) {
+          set({ index: nextIndex, wordStart: 0, wordLen: 0 });
+          speakCurrent();
+        } else {
+          // 무음 재생으로 쉼(gapPlayer 주석 참조 — setTimeout 금지). 쉼 동안의 정지/이탈/
+          // 수동 이동은 pendingGap 정리 + epoch 로 무효화.
+          const cancel = playGap(gap, () => {
+            pendingGap = null;
             if (myEpoch !== epoch) return;
+            set({ index: nextIndex, wordStart: 0, wordLen: 0 });
             speakCurrent();
-          }, gap);
+          });
+          pendingGap = { cancel, nextIndex };
+        }
       } else {
         // 책 끝 = 완전 종료. 재생 엔진과 미디어 세션을 모두 내린다. 앵커(무음 루프)만 멈추면
         // setActiveForLockScreen(true) 로 등록된 mediaPlayback 포그라운드
@@ -377,6 +400,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     setNotice: (msg) => set({ notice: msg }),
 
     load: ({ docId, title, sentences, paraStarts, startIndex = 0 }) => {
+      clearPendingGap(false); // 새 문서 — 이전 문서의 쉼 예약은 무효
       // suspend(지원 엔진): 같은 문서를 다시 열었을 때(이어듣기) 직전에 만들어 둔 선행합성이
       // 그대로 살아 즉시 이어진다. 다른 문서의 잔존 캐시는 키가 안 맞아 그냥 지나가고,
       // 워밍업·prefetch 가 새 항목을 넣으며 자연 축출된다(엔진 MAX_CACHE 상한).
@@ -411,6 +435,9 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     pause: () => {
+      // 쉼(문장 사이 무음) 대기 중이었다면 다음 인덱스를 확정 — 재개가 다 들은 문장을
+      // 반복하지 않고 다음 문장부터 이어진다.
+      clearPendingGap(true);
       epoch++; // 진행 중 콜백 무효화
       // suspend(지원 엔진): 완료된 선행합성 버퍼를 보존한 채 정지 — 재개가 캐시 히트로 즉시
       // 시작되고, 정지 때마다 버퍼를 0에서 다시 쌓느라 생기던 초반 리듬 흔들림이 없어진다.
@@ -435,6 +462,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     next: () => {
+      clearPendingGap(false); // 수동 이동은 쉼을 취소(index 는 아래서 직접 지정)
       const { index, sentences, playing } = get();
       if (index >= sentences.length - 1) return;
       set({ index: index + 1, wordStart: 0, wordLen: 0 });
@@ -446,6 +474,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     prev: () => {
+      clearPendingGap(false);
       const { index, sentences, playing } = get();
       if (index <= 0) return;
       set({ index: index - 1, wordStart: 0, wordLen: 0 });
@@ -458,6 +487,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     applyRate: (rate) => {
       if (!get().playing) return;
+      // 문장 사이 쉼(pendingGap) 대기 중이면 먼저 다음 인덱스를 확정한다 — 안 하면 아래
+      // ③ 재발화 폴백의 seek(get().index)가 "쉼 동안 이전 문장에 남겨 둔 index"를 타서
+      // 방금 다 들은 문장을 반복 재생한다(교차검증 CRITICAL 2026-07-19: 쉼 중엔 엔진
+      // player 가 이미 내려가 있어 ①②라이브가 항상 실패 → 반드시 ③으로 떨어짐).
+      clearPendingGap(true);
       // ① 정확 라이브(합성 파라미터가 같은 구간): 끊김 0·품질 그대로 즉시 새 속도.
       //    (sherpa 1×~3× 구간, Edge 는 SSML 몫이 같은 구간(2×↔2.5×↔3×…)에서 성공.)
       if (activeEngine.setRate?.(rate)) {
@@ -489,6 +523,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     seek: (i) => {
+      clearPendingGap(false);
       const { sentences, playing } = get();
       const clamped = Math.max(0, Math.min(i, sentences.length - 1));
       set({ index: clamped, wordStart: 0, wordLen: 0 });
@@ -501,6 +536,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     unload: () => {
+      clearPendingGap(false);
       epoch++;
       activeEngine.stop();
       stopMediaSession(); // 잠금화면 알림까지 제거

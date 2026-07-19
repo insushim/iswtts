@@ -26,6 +26,24 @@ export function sherpaModelSpeed(rate?: number): number {
   return Math.min(MODEL_MAX, r / SONIC_FIRST_MAX);
 }
 
+// 짧은 문장 템포 평준화(v1.24.0). 모델은 짧은 입력을 눈에 띄게 빠르게 읽는다(실측
+// 2026-07-19: 평문 8.0±0.6 syl/s vs 장문 5.9~6.6 — 긴 문장 뒤 짧은 문장에서 "갑자기
+// 빨라짐" 체감의 진범). 음절 수 기준으로 모델 speed 를 소폭 낮춰(≤12음절 0.88, 35음절+
+// 1.0 선형) 문장 간 템포를 고르게 한다. 실측: speed 0.88 → 8.45→7.51 syl/s.
+// ⚠️ 이 보정은 합성 speed 에만 곱하고 재생 보상식(sherpaPlaybackRate)에는 절대 넣지
+// 않는다 — 넣으면 스트레치가 보정을 도로 상쇄한다. 텍스트의 순수 함수라 캐시 키(원문
+// 포함)와 자동 정합.
+const TEMPO_FULL_SYL = 35;
+const TEMPO_SHORT_SYL = 12;
+const TEMPO_MIN_COMP = 0.88;
+export function sherpaTempoComp(text: string): number {
+  let syl = 0;
+  for (const c of text) if (c >= '가' && c <= '힣') syl++;
+  if (syl >= TEMPO_FULL_SYL) return 1;
+  const t = Math.max(0, syl - TEMPO_SHORT_SYL) / (TEMPO_FULL_SYL - TEMPO_SHORT_SYL);
+  return TEMPO_MIN_COMP + (1 - TEMPO_MIN_COMP) * t;
+}
+
 // 스마트 스피드(무음 압축) 적용 여부 — 스트레치 온전 구간(≤3×)의 확정된 소리는 건드리지
 // 않고, 스트레치가 한계(3.0)에 붙는 초고배속에서만 쉼을 압축해 부담을 덜어낸다.
 export function sherpaTrimEnabled(rate?: number): boolean {

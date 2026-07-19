@@ -31,27 +31,39 @@ export function hasClauseComma(text: string): boolean {
   return /[,，、;；]/.test(text.replace(/(\d),(?=\d)/g, '$1'));
 }
 
+/** 숨을 심기엔 너무 짧은 후속 절(글자) — "하나, 둘, 셋" 열거에서 헐떡임 방지. */
+const BREATH_MIN_CLAUSE = 6;
+
 /**
- * 분할되지 않은 문장의 가운데 절 경계(쉼표류) 뒤에 <breath> 를 심는다(SherpaTtsEngine 의
- * 숨소리 옵션 — 모델이 태그를 들숨으로 렌더, 실측 2026-07-18 태그 미발음 +0.36s).
- * 경계가 없거나 문장 끝뿐이면 원문 그대로(숨 생략).
+ * 문장의 절 경계(쉼표류) 뒤마다 <breath> 를 심는다(SherpaTtsEngine 의 숨소리 옵션 —
+ * 모델이 태그를 들숨으로 렌더, 실측 2026-07-18 태그 미발음 +0.3s, 다중 태그도 정상).
+ * v1.24.0: "쉼표 자리에서 거의 항상 숨"(사용자 요청 2026-07-19) — 가운데 1회 → 전 경계.
+ * 제외: 문장 끝 쉼표(뒤에 본문 없음), 숫자 사이 쉼표(1,50 비정형 — 정형 12,500 은
+ * 정규화가 소거), 후속 절이 너무 짧은 경계(열거 헐떡임 방지). 경계가 없으면 원문 그대로.
  */
 export function injectBreathInline(text: string): string {
   const ends: number[] = [];
   // matchAll 은 정규식을 내부 복제해 lastIndex 를 공유하지 않는다(전역 정규식 오염 원천 차단).
   for (const m of text.matchAll(CLAUSE_BREAK)) {
     const end = m.index + m[0].length;
-    // 문장 끝에 붙은 쉼표류(뒤에 본문 없음)와 숫자 사이 쉼표(1,50 같은 비정형 표기 —
-    // 정형 12,500 은 정규화가 이미 소거)는 심을 자리가 아니다.
     if (end >= text.length) continue;
     if (/\d/.test(text[m.index - 1] ?? '') && /\d/.test(text[end])) continue;
     ends.push(end);
   }
   if (!ends.length) return text;
-  // 가운데(짝수면 뒤쪽) 경계 — 사람은 숨이 모자라는 문장 후반에서 쉰다. 절 분할 경로의
-  // 가운데 청크 선택(floor(len/2))과도 같은 규약.
-  const at = ends[Math.floor(ends.length / 2)];
-  return `${text.slice(0, at)}<breath> ${text.slice(at)}`;
+  // 다음 경계(또는 문장 끝)까지의 본문 길이가 임계 미만인 경계는 건너뛴다.
+  const eligible = ends.filter((at, i) => {
+    const until = i + 1 < ends.length ? ends[i + 1] : text.length;
+    return until - at >= BREATH_MIN_CLAUSE;
+  });
+  if (!eligible.length) return text;
+  let out = '';
+  let pos = 0;
+  for (const at of eligible) {
+    out += `${text.slice(pos, at)}<breath> `;
+    pos = at;
+  }
+  return out + text.slice(pos);
 }
 
 /**
