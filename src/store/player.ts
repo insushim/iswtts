@@ -3,8 +3,14 @@ import type { TtsEngine } from '../tts/TtsEngine';
 import { getEngine, systemEngine } from '../tts';
 import { sherpaStats, resetSherpaStats } from '../tts/sherpa/stats';
 import { sherpaModelSpeed, sherpaTrimEnabled, sherpaRubato } from '../tts/sherpa/rate';
-import { contrastEdgeVoice } from '../tts/edge/voices';
+import { contrastEdgeVoice, genderEdgeVoice } from '../tts/edge/voices';
 import { splitDialogue, type DialogueSegment } from '../lib/dialogue';
+import {
+  guessDialogueGender,
+  SHERPA_FEMALE_SIDS,
+  SHERPA_MALE_SIDS,
+  type SpeakerGender,
+} from '../lib/speakerGender';
 import { useSettings } from './settings';
 import { useLibrary } from './library';
 import {
@@ -86,8 +92,12 @@ export type PlayerState = {
 
 // 엔진마다 음성 식별자 체계가 다르다 → "실제 발화할 엔진"(자동 전환 반영) 기준으로 voiceId 전달.
 // dialogue=true 면 대사 음성으로 교체(멀티보이스): 사용자가 고른 대사 음성 우선, 미지정 시
-// 자동 대비(Edge=여↔남, sherpa=기본 화자+1, 시스템=같은 음성+피치 대비).
-function speakParams(engineId: string, dialogue = false) {
+// 자동 대비. v1.25.1: 지문의 성별 단서(speakerGender.ts — "그가 말했다"/"어머니가 …")로
+// 남/여 음성을 맞춰 고른다(Edge=성별 라벨, sherpa=실측 성별 sid). 단서 없으면 종전 중립
+// 대비(Edge=여↔남, sherpa=기본 화자+1, 시스템=같은 음성+피치 대비).
+// ⚠️ gender 는 재생·prefetch·워밍업 세 경로 모두 같은 문장이면 같은 값이어야 한다(다르면
+// 캐시 키가 갈려 프리페치가 헛돈다) — 항상 gendersOf(sentences)[n] 로만 얻을 것.
+function speakParams(engineId: string, dialogue = false, gender: SpeakerGender | null = null) {
   const s = useSettings.getState();
   const base = {
     rate: s.rate,
@@ -102,7 +112,10 @@ function speakParams(engineId: string, dialogue = false) {
   };
   if (!dialogue) return base;
   if (engineId === 'edge') {
-    return { ...base, voiceId: s.edgeDialogueVoiceId || contrastEdgeVoice(base.voiceId, s.language) };
+    const auto = gender
+      ? genderEdgeVoice(gender, base.voiceId, s.language)
+      : contrastEdgeVoice(base.voiceId, s.language);
+    return { ...base, voiceId: s.edgeDialogueVoiceId || auto };
   }
   if (engineId === 'sherpa') {
     // sid 는 0~9 만 유효 — 저장소 손상/구버전 값은 자동 대비로 폴백.
@@ -111,6 +124,11 @@ function speakParams(engineId: string, dialogue = false) {
     }
     const parsed = Number.parseInt(base.voiceId || '0', 10);
     const baseSid = Number.isInteger(parsed) && parsed >= 0 && parsed <= 9 ? parsed : 0;
+    if (gender) {
+      const pool = gender === 'male' ? SHERPA_MALE_SIDS : SHERPA_FEMALE_SIDS;
+      const pick = pool.find((sid) => sid !== String(baseSid)) ?? pool[0];
+      return { ...base, voiceId: pick };
+    }
     return { ...base, voiceId: String((baseSid + 1) % 10) };
   }
   if (s.dialogueVoiceId) return { ...base, voiceId: s.dialogueVoiceId };
@@ -128,6 +146,28 @@ function segsOf(sentences: string[]): DialogueSegment[][] {
   return segCache;
 }
 
+// 문장별 대사 화자 성별(지문 단서 추정) — segsOf 와 같은 문서 단위 메모. 재생·prefetch·
+// 워밍업이 전부 이 값을 쓰므로 세 경로의 캐시 키가 항상 일치한다(speakParams 경고 참조).
+let genderCacheSrc: string[] | null = null;
+let genderCache: (SpeakerGender | null)[] = [];
+function gendersOf(sentences: string[]): (SpeakerGender | null)[] {
+  if (genderCacheSrc !== sentences) {
+    genderCacheSrc = sentences;
+    genderCache = sentences.map(guessDialogueGender);
+  }
+  return genderCache;
+}
+
+// 세그먼트의 대사 성별 인자 — speakParams 에 넘길 값의 단일 계산 경로(재생·폴백·prefetch·
+// 워밍업 4곳이 공유 — 한 곳만 고쳐지는 사고 방지, 교차검증 지적).
+function genderFor(
+  sentences: string[],
+  dialogue: boolean,
+  sentenceIndex: number,
+): SpeakerGender | null {
+  return dialogue ? gendersOf(sentences)[sentenceIndex] : null;
+}
+
 // fromSentence 문장의 fromSeg 세그먼트부터 depth 개의 발화 유닛을 순서대로 수집.
 // 재생 중 prefetch 와 로드 시 워밍업이 이 순회를 공유한다 — 같은 로직이 두 곳에 갈라져
 // 한쪽만 고쳐지는 사고 방지(교차검증 지적 2026-07-18).
@@ -137,12 +177,12 @@ function collectUpcoming(
   fromSentence: number,
   fromSeg: number,
   depth: number,
-): DialogueSegment[] {
-  const upcoming: DialogueSegment[] = [];
+): Array<DialogueSegment & { sentence: number }> {
+  const upcoming: Array<DialogueSegment & { sentence: number }> = [];
   for (let n = fromSentence; n < sentences.length && upcoming.length < depth; n++) {
     const nsegs = allSegs?.[n] ?? [{ text: sentences[n], start: 0, dialogue: false }];
     for (let k = n === fromSentence ? fromSeg : 0; k < nsegs.length && upcoming.length < depth; k++) {
-      upcoming.push(nsegs[k]);
+      upcoming.push({ ...nsegs[k], sentence: n }); // 성별 조회(gendersOf)용 문장 인덱스 동반
     }
   }
   return upcoming;
@@ -299,7 +339,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
           else advanceSentence();
         },
       };
-      eng.speak(seg.text, speakParams(engId, seg.dialogue), {
+      eng.speak(seg.text, speakParams(engId, seg.dialogue, genderFor(sentences, seg.dialogue, index)), {
         ...handlers,
         onError: (err?: Error) => {
           if (myEpoch !== epoch) return;
@@ -329,7 +369,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
             eng.stop(); // 잔여 재생·prefetch 캐시(mp3/wav) 정리(폴백 후 누수 방지)
             activeEngine = systemEngine;
             fellBack = true;
-            systemEngine.speak(seg.text, speakParams('system', seg.dialogue), {
+            systemEngine.speak(seg.text, speakParams('system', seg.dialogue, genderFor(sentences, seg.dialogue, index)), {
               ...handlers,
               onError: () => {
                 if (myEpoch !== epoch) return;
@@ -353,7 +393,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
       if (!fellBack) {
         const depth = engine.prefetchUnits ?? DEFAULT_PREFETCH_UNITS;
         const upcoming = collectUpcoming(sentences, allSegs, index, si + 1, depth);
-        for (const u of upcoming) engine.prefetch?.(u.text, speakParams(engineId, u.dialogue));
+        for (const u of upcoming)
+          engine.prefetch?.(
+            u.text,
+            speakParams(engineId, u.dialogue, genderFor(sentences, u.dialogue, u.sentence)),
+          );
         if (engineId === 'sherpa') sherpaQueueRate = settings.rate;
       }
     };
@@ -389,7 +433,10 @@ export const usePlayer = create<PlayerState>((set, get) => {
     }
     const allSegs = settings.dialogueVoice ? segsOf(sentences) : null;
     for (const u of collectUpcoming(sentences, allSegs, index, 0, WARMUP_UNITS)) {
-      engine.prefetch(u.text, speakParams(engineId, u.dialogue));
+      engine.prefetch(
+        u.text,
+        speakParams(engineId, u.dialogue, genderFor(sentences, u.dialogue, u.sentence)),
+      );
     }
     sherpaQueueRate = settings.rate;
   };
@@ -547,9 +594,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
       epoch++;
       activeEngine.stop();
       stopMediaSession(); // 잠금화면 알림까지 제거
-      // 대사 세그먼트 캐시 정리(닫은 문서의 문장 배열을 붙들지 않게).
+      // 대사 세그먼트·성별 캐시 정리(닫은 문서의 문장 배열을 붙들지 않게 — 둘은 항상 짝).
       segCacheSrc = null;
       segCache = [];
+      genderCacheSrc = null;
+      genderCache = [];
       set({
         docId: null,
         title: '',

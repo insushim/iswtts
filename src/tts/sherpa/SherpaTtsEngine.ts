@@ -352,9 +352,11 @@ export class SherpaTtsEngine implements TtsEngine {
 
   async getVoices(): Promise<EngineVoice[]> {
     // Supertonic 3 = 화자 10(sid 0~9). 라벨은 실청취로 고르게 안내(성별 메타데이터 없음).
+    // 성별 라벨 = F0 자기상관 실측(2026-07-20, sid 0~4 여 172~253Hz / 5~9 남 85~151Hz —
+    // speakerGender.ts 상수와 같은 근거). Supertone voice_styles F1~F5/M1~M5 명명과 일치.
     return Array.from({ length: 10 }, (_, i) => ({
       id: String(i),
-      name: `화자 ${i + 1}`,
+      name: `화자 ${i + 1} (${i <= 4 ? '여' : '남'})`,
       language: '다국어',
       quality: 'neural',
     }));

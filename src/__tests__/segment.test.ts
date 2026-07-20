@@ -6,9 +6,9 @@ describe('segmentSentences (한국어 문장 분할)', () => {
     expect(out).toEqual(['첫 문장입니다.', '두 번째 문장입니다!', '세 번째인가요?', '네.']);
   });
 
-  it('닫는 인용부호를 문장에 포함해 분할', () => {
+  it('대사+지문은 한 문장으로 유지(v1.25.1 스펙 변경 — 구 동작이 사용자 보고 오분할)', () => {
     const out = segmentSentences('"안녕하세요." 그가 말했다.');
-    expect(out).toEqual(['"안녕하세요."', '그가 말했다.']);
+    expect(out).toEqual(['"안녕하세요." 그가 말했다.']);
   });
 
   it('소수점은 분할하지 않음 (3.5% 등)', () => {
@@ -34,4 +34,92 @@ describe('segmentSentences (한국어 문장 분할)', () => {
     expect(segmentSentences('')).toEqual([]);
     expect(segmentSentences('   \n\n  ')).toEqual([]);
   });
+});
+
+describe('소설 텍스트 오분할 방지(v1.25.1 — 사용자 "한 문장을 막 나눠 읽음" 보고)', () => {
+  const { segmentSentences } = require('../lib/segment');
+  test('대사+지문은 한 문장(닫는 따옴표 안 종결부호는 경계 아님)', () => {
+    expect(segmentSentences('"가자." 그가 말했다.')).toEqual(['"가자." 그가 말했다.']);
+    expect(segmentSentences('"어디 가?" 하고 어머니가 물었다.')).toEqual([
+      '"어디 가?" 하고 어머니가 물었다.',
+    ]);
+    expect(segmentSentences('“멈춰!” 사내가 소리치며 달려왔다.')).toEqual([
+      '“멈춰!” 사내가 소리치며 달려왔다.',
+    ]);
+  });
+  test('문장 중간 말줄임은 경계 아님, 새 발화(여는 따옴표) 앞에서만 경계', () => {
+    expect(segmentSentences('그는… 조용히 걸었다.')).toEqual(['그는… 조용히 걸었다.']);
+    expect(segmentSentences('할 말이 있었다… "미안해."')).toEqual([
+      '할 말이 있었다…',
+      '"미안해."',
+    ]);
+  });
+  test('날짜·장 번호 마침표는 파편으로 쪼개지 않는다(숫자 오독의 원인)', () => {
+    expect(segmentSentences('1945. 8. 15. 그날의 아침이었다.')).toEqual([
+      '1945. 8. 15. 그날의 아침이었다.',
+    ]);
+    expect(segmentSentences('1. 서장')).toEqual(['1. 서장']);
+    expect(segmentSentences('12. 귀향')).toEqual(['12. 귀향']);
+  });
+  test('평범한 종결은 종전대로 분할', () => {
+    expect(segmentSentences('밤이 깊었다. 바람이 불었다. 그는 떠났다.')).toEqual([
+      '밤이 깊었다.',
+      '바람이 불었다.',
+      '그는 떠났다.',
+    ]);
+    expect(segmentSentences('정말일까? 아무도 몰랐다!')).toEqual([
+      '정말일까?',
+      '아무도 몰랐다!',
+    ]);
+  });
+  test('소수·쉼표 수는 종전대로 안전(마침표가 공백 앞이 아님)', () => {
+    expect(segmentSentences('체온은 36.5도였다. 정상이다.')).toEqual([
+      '체온은 36.5도였다.',
+      '정상이다.',
+    ]);
+  });
+});
+
+describe('교차검증 반영(v1.25.1): 낫표·연속 대사·따옴표 누출', () => {
+  const { segmentSentences } = require('../lib/segment');
+  test('낫표 대사+지문도 한 문장, 다음 문장은 정상 분할', () => {
+    expect(segmentSentences('「가자.」 그가 말했다. 밤이 깊었다.')).toEqual([
+      '「가자.」 그가 말했다.',
+      '밤이 깊었다.',
+    ]);
+  });
+  test('연속 대사는 발화 단위로 분리("왔니?" "응.")', () => {
+    expect(segmentSentences('"왔니?" "응, 왔어." 그가 웃었다.')).toEqual([
+      '"왔니?"',
+      '"응, 왔어." 그가 웃었다.',
+    ]);
+  });
+});
+
+describe('다중 문장 대사(교차검증 Claude 지적 — 인용 스팬 추적)', () => {
+  const { segmentSentences } = require('../lib/segment');
+  test('대사 안쪽 종결부호는 경계 아님(여는 따옴표 고아 방지)', () => {
+    expect(segmentSentences('「첫 문장이다. 둘째 문장이다.」 그가 말했다.')).toEqual([
+      '「첫 문장이다. 둘째 문장이다.」 그가 말했다.',
+    ]);
+    expect(segmentSentences('"떠나자. 지금 당장." 그녀가 말했다. 밤이 깊었다.')).toEqual([
+      '"떠나자. 지금 당장." 그녀가 말했다.',
+      '밤이 깊었다.',
+    ]);
+  });
+  test('짝 잃은 따옴표는 폭주하지 않는다(일반 분할 유지)', () => {
+    expect(segmentSentences('그는 "라고 말했다. 밤이 깊었다. 바람이 불었다.')).toEqual([
+      '그는 "라고 말했다.',
+      '밤이 깊었다.',
+      '바람이 불었다.',
+    ]);
+  });
+});
+
+test('병리 반복 입력("1. 1. …")에 선형 시간(교차검증 codex — O(n²) 방지)', () => {
+  const { splitLineToSentences } = require('../lib/segment');
+  const line = Array(4000).fill('1. ').join('') + '끝';
+  const t0 = Date.now();
+  splitLineToSentences(line);
+  expect(Date.now() - t0).toBeLessThan(500);
 });

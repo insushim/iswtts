@@ -117,3 +117,29 @@ describe('normalizeForSpeech', () => {
     expect(normalizeForSpeech(normalizeForSpeech(t))).toBe(normalizeForSpeech(t));
   });
 });
+
+describe('날짜 연쇄(v1.25.1 — "1945. 8. 15." 파편 낭독 방지)', () => {
+  const { normalizeForSpeech } = require('../tts/sherpa/normalizeKo');
+  test('연.월.일 → 년/월/일 낭독', () => {
+    expect(normalizeForSpeech('1945. 8. 15. 그날의 아침이었다.')).toBe(
+      '천구백사십오년 팔월 십오일 그날의 아침이었다.',
+    );
+    expect(normalizeForSpeech('2026. 12. 31.')).toBe('이천이십육년 십이월 삼십일일');
+  });
+  test('소수·번호 나열은 오인하지 않음', () => {
+    expect(normalizeForSpeech('체온 36.5도.')).toBe('체온 삼십육 점 오도.');
+    // 13 이상은 월이 아니라 변환 안 함(그룹별 그대로)
+    expect(normalizeForSpeech('1945. 13. 20.')).not.toContain('년');
+  });
+});
+
+test('날짜 뒤 조사("2026. 12. 31.에")도 정규화(교차검증 CONFIRMED)', () => {
+  const { normalizeForSpeech } = require('../tts/sherpa/normalizeKo');
+  expect(normalizeForSpeech('2026. 12. 31.에 만나자.')).toBe('이천이십육년 십이월 삼십일일에 만나자.');
+});
+
+test('일 표기 중복·0일 방지(교차검증 codex CONFIRMED)', () => {
+  const { normalizeForSpeech } = require('../tts/sherpa/normalizeKo');
+  expect(normalizeForSpeech('2026. 12. 31일에 만나자.')).toBe('이천이십육년 십이월 삼십일일에 만나자.');
+  expect(normalizeForSpeech('2026. 12. 0.')).not.toContain('년');
+});

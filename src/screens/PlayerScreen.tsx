@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Alert,
-  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -14,6 +13,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { usePalette } from '../lib/theme';
 import { splitHighlight } from '../lib/highlight';
 import { clamp01, indexToPct, pctToIndex } from '../lib/scrub';
+import { RATE_MIN, RATE_MAX, stepRateValue } from '../lib/rateSteps';
 import { usePlayer } from '../store/player';
 import { useLibrary } from '../store/library';
 import { useSettings } from '../store/settings';
@@ -152,12 +152,7 @@ export default function PlayerScreen({ route, navigation }: Props) {
   // 현재 문장을 [앞 · 하이라이트 단어 · 뒤]로 분해
   const { before, word, after } = splitHighlight(cur, wordStart, wordLen);
 
-  // 배속 프리셋. Android setSpeechRate는 피치 보존 배속(최대 10×, 기기 엔진에 따라 상한).
-  // iOS AVSpeech는 상한이 ~2×라 2× 초과는 무효 → iOS에선 2×까지만 노출.
-  const RATE_STEPS =
-    Platform.OS === 'ios'
-      ? [0.5, 1.0, 1.5, 2.0]
-      : [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0];
+  // 배속 눈금은 lib/rateSteps.ts 단일 진실원(1~2×는 0.1 간격 — v1.25.1).
 
   // ── 진행 바 시킹: 탭/드래그로 문장 위치 이동(2026-07-08 사용자 요청) ─────────
   // 표시와 시킹은 반드시 같은 위치 공식(lib/scrub.ts) — 다르면 놓는 순간 바가 튄다.
@@ -169,16 +164,13 @@ export default function PlayerScreen({ route, navigation }: Props) {
   // 표시 진행률: 드래그 중엔 손가락 위치, 평소엔 실제 진행.
   const progressPct = indexToPct(index, sentences.length);
   const fillPct = scrub ?? progressPct;
-  const rateMin = RATE_STEPS[0];
-  const rateMax = RATE_STEPS[RATE_STEPS.length - 1];
+  const rateMin = RATE_MIN;
+  const rateMax = RATE_MAX;
   // 재생 중 배속 +/- (양방향, 순환 없음 — 끝에서 멈춘다). 예전 단일 순환 버튼은 10× 다음이
   // 0.5× 로 급락(랩)해, 그 0.5× 저속 합성이 직렬 큐를 막아 "10배속 갔다 1배속 오면 멈춤"의
   // 방아쇠였다(실측 2026-07-16). 이제 −/+ 로 인접 단계만 이동해 그 함정을 원천 차단한다.
   const stepRate = (dir: 1 | -1) => {
-    const next =
-      dir > 0
-        ? RATE_STEPS.find((s) => s > rate + 0.001) ?? rateMax
-        : [...RATE_STEPS].reverse().find((s) => s < rate - 0.001) ?? rateMin;
+    const next = stepRateValue(rate, dir);
     if (next === rate) return;
     setSettings({ rate: next });
     // 재생 중이면 즉시 반영 — 가능하면 라이브(끊김 0), 불가하면 현재 문장 재발화.

@@ -63,6 +63,32 @@ export function defaultEdgeVoice(language?: string): string {
 
 // 대사 음성 자동 선택: 같은 언어의 원본(비가상) 음성 중 기본 음성과 다른 첫 번째 —
 // 목록이 여/남 교차 배치라 자연스럽게 성별 대비가 난다(선희→인준, 인준/현수→선희).
+// 성별 지정 대사 음성(v1.25.1): 요청 성별의 원본(변조 아님) 음성 중 기본 음성과 다른 첫
+// 후보. 큐레이션 목록의 name 에 박힌 "(여"/"(남" 라벨이 진실원(전 언어 공통 표기).
+// 후보가 없으면 기존 중립 대비로 폴백.
+export function genderEdgeVoice(
+  gender: 'male' | 'female',
+  baseId?: string,
+  language?: string,
+): string {
+  const base = (baseId || defaultEdgeVoice(language)).split('#')[0];
+  const prefix = (language || 'ko-KR').toLowerCase().split('-')[0];
+  const mark = gender === 'male' ? '(남' : '(여';
+  const cand = EDGE_VOICES.find(
+    (v) =>
+      !v.id.includes('#') &&
+      v.language.toLowerCase().startsWith(prefix) &&
+      v.name.includes(mark) &&
+      v.id !== base,
+  );
+  if (cand) return cand.id;
+  // 같은 성별의 "다른" 음성이 없는 언어(한국어 여성 원본은 선희뿐): 성별이 맞는 기본
+  // 음성을 그대로 쓴다 — 대비는 없지만 성별 오귀속(여성 대사를 남성 목소리로)보다 낫다.
+  const baseVoice = EDGE_VOICES.find((v) => v.id === base);
+  if (baseVoice?.name.includes(mark)) return base;
+  return contrastEdgeVoice(baseId, language);
+}
+
 export function contrastEdgeVoice(baseId?: string, language?: string): string {
   const base = (baseId || defaultEdgeVoice(language)).split('#')[0];
   const prefix = (language || 'ko-KR').toLowerCase().split('-')[0];

@@ -29,6 +29,7 @@ import { subtitlesVisible } from '../lib/visibility';
 import { openBatteryOptRequest } from '../lib/batteryOpt';
 import { startBgSound, stopBgSound, setBgVolume } from '../lib/bgSound';
 import { APP_VERSION } from '../lib/config';
+import { stepRateValue, RATE_MAX } from '../lib/rateSteps';
 import type { RootStackParamList } from '../../App';
 import type { EngineVoice } from '../tts/TtsEngine';
 
@@ -292,7 +293,7 @@ export default function SettingsScreen() {
     Math.round(Math.max(lo, Math.min(hi, v)) * 100) / 100;
 
   // iOS AVSpeech는 배속 상한이 ~2× → 플랫폼별 최대 속도.
-  const rateMax = Platform.OS === 'ios' ? 2 : 10;
+  const rateMax = RATE_MAX; // 눈금 단일 진실원(lib/rateSteps.ts) — 하드코딩 이중화 금지
 
   return (
     <ScrollView
@@ -456,12 +457,13 @@ export default function SettingsScreen() {
         label="속도"
         value={`${s.rate}×`}
         onDec={() => {
-          const r = clamp(s.rate - 0.5, 0.5, rateMax);
+          // 눈금(1~2× 는 0.1 간격)은 rateSteps.ts 단일 진실원 — 플레이어 스테퍼와 동일.
+          const r = stepRateValue(s.rate, -1);
           s.set({ rate: r });
           usePlayer.getState().applyRate(r); // 재생 중이면 즉시 반영(가능 시 라이브)
         }}
         onInc={() => {
-          const r = clamp(s.rate + 0.5, 0.5, rateMax);
+          const r = stepRateValue(s.rate, 1);
           s.set({ rate: r });
           usePlayer.getState().applyRate(r);
         }}
