@@ -10,7 +10,7 @@ import {
   sherpaTrimEnabled,
   sherpaTempoComp,
   sherpaRubato,
-  SPEED_COMP_FLOOR,
+  sherpaPaceComp,
 } from './rate';
 import { disposePlayer } from '../disposePlayer';
 import { compressSilence, trimEdgeSilence, LEAD_PAD_MS, TRAIL_PAD_MS, EDGE_FADE_MS } from './smartSpeed';
@@ -22,7 +22,17 @@ import { recordSynth, recordStarvation, recordPlaybackProgress } from './stats';
 import { subtitlesVisible, onVisibilityChange } from '../../lib/visibility';
 
 // trimFactor: 스마트 스피드(무음 압축)로 이미 번 배속(미압축=1) — 재생속도에서 이만큼 덜어낸다.
-type Synth = { uri: string; boundaries: WordBoundary[]; trimFactor: number };
+// tempoComp·rubatoRaw: 이 문장의 완급 인자(텍스트 순수 함수 — 합성 시 계산해 실어 둔다).
+// v1.26.1 부터 완급은 파일에 굽지 않고 재생 스트레치에 곱한다(sherpaPaceComp — 모델 speed 의
+// F0 부작용 실측이 근거, rate.ts). rubato 설정 토글은 재생 시점 params 로 가르므로 캐시
+// 파일은 설정 무관 유효.
+type Synth = {
+  uri: string;
+  boundaries: WordBoundary[];
+  trimFactor: number;
+  tempoComp: number;
+  rubatoRaw: number;
+};
 type SynthState = { cancelled: boolean; uri: string | null };
 // player: 합성 완료 시 미리 생성·prepare·배속 적용해 둔 재생기(프리로드) — 문장 전환이 play()
 // 한 번으로 끝나 시작 지연이 사라진다. disposed: cancel 이후 뒤늦은 프리로드 생성 차단.
@@ -76,10 +86,10 @@ const SYNTH_TIMEOUT_MS = 60_000;
 // 구값 120(합계 240ms)은 그 절반이라 분할 문장만 절 경계를 몰아쳐 "갑자기 빨라짐/씹힘"으로
 // 들렸다(사용자 보고). 문장 간 쉼(TRAIL 320+LEAD 40=360ms)을 넘지 않게 360 에 캡.
 const INTER_CHUNK_PAUSE_MS = 240;
-// 합성 들숨(v1.26.0)이 든 이음새 구조 = 절 꼬리 80 + 앞 무음 40 + 들숨 240~320 + 뒤 무음
-// 60 + 절 머리 40 ≈ 460~540ms. 사람 낭독의 "숨 쉬는 절 경계"는 일반 절 경계(400~440ms)보다
-// 조금 길다 — 들숨이 쉼의 일부라 자연스럽다. 뒤 무음(60ms)은 들숨 급정지와 발화 어택을
-// 분리하는 최소 간격.
+// 합성 들숨(v1.26.0)이 든 이음새 구조 = 절 꼬리 80 + 앞 무음 40 + 들숨 180~260(v1.26.1
+// 단축 — breathWav.ts) + 뒤 무음 60 + 절 머리 40 ≈ 400~480ms. 사람 낭독의 "숨 쉬는 절
+// 경계"는 일반 절 경계(400~440ms)와 같거나 조금 길다 — 들숨이 쉼의 일부라 자연스럽다.
+// 뒤 무음(60ms)은 들숨 끝과 발화 어택을 분리하는 최소 간격.
 // ⚠️ 하이라이트 정합: 들숨 피크는 생성 시점에 align.ts 의 BREATHY_THRESH 아래로 스케일돼
 // (breathWav.ts) 앞뒤 무음과 함께 하나의 긴 쉼(≥ PAUSE_MIN_MS)으로 분류된다 — 하이라이트가
 // 들숨에서 멈췄다 발화 재개에 맞춰 전진.
@@ -137,6 +147,10 @@ export class SherpaTtsEngine implements TtsEngine {
   private currentModelSpeed: number | null = null;
   private currentTrimEnabled: boolean | null = null;
   private currentTrimFactor = 1;
+  // 현재 문장의 rubato 설정 스냅샷 — setRate/setRateApprox 가 완급을 "요청된 rate 기준"으로
+  // 재계산할 때 쓴다(compFor). 완급 값 자체를 저장하지 않는 이유: >3×에서 시작한 문장(comp
+  // 게이트로 1)을 ≤3×로 내리면 저장값이 stale — 교차검증 codex CRITICAL 2026-07-20.
+  private currentRubatoOn = false;
 
   speak(text: string, params: SpeakParams, handlers: SpeakHandlers): void {
     const myGen = ++this.playGen;
@@ -231,7 +245,8 @@ export class SherpaTtsEngine implements TtsEngine {
       try {
         const p = createAudioPlayer(synth.uri, { updateInterval: STATUS_UPDATE_MS });
         try { (p as any).shouldCorrectPitch = true; } catch { /* noop */ }
-        try { p.setPlaybackRate(sherpaPlaybackRate(params.rate, synth.trimFactor)); } catch { /* noop */ }
+        // × paceComp(완급, v1.26.1): 피치 보존 스트레치로 문장별 템포 변주 — playFile 과 동일식.
+        try { p.setPlaybackRate(this.effectivePlaybackRate(synth, params)); } catch { /* noop */ }
         // 이 함수는 전부 동기라 disposed 체크(위)와 대입 사이에 cancel이 끼어들 수 없다.
         entry.player = p;
       } catch { /* 프리로드 실패는 무해 — 재생 시점에 새로 만든다 */ }
@@ -314,16 +329,15 @@ export class SherpaTtsEngine implements TtsEngine {
   // 재생 중 배속 라이브 변경. 합성은 자연속도 고정이라(≤3×: 모델 speed=1·무음압축 off)
   // 그 구간 안에서는 스트레치만 바꿔 끼우면 된다 — 재합성·끊김 0. 합성 파라미터가 달라지는
   // 경계(1× 이하·3× 초과)를 넘나들면 false — 호출부가 재발화로 폴백.
-  // ⚠️ 불변식(setRateApprox 공통): currentModelSpeed 는 "순수" sherpaModelSpeed(rate)여야
-  // 한다 — 템포 평준화(sherpaTempoComp)·루바토(sherpaRubato)는 여기 절대 포함 금지. 그래야
-  // 아래 나눗셈에서 두 보정이 상쇄돼 라이브 배속 변경 후에도 문장의 net 템포(보정 × rate
-  // 비례)가 유지된다(rate.ts 경고의 소비처 측 짝 — 교차검증 지적 2026-07-19).
+  // ⚠️ 불변식(setRateApprox 공통): currentModelSpeed 는 "순수" sherpaModelSpeed(rate).
+  // v1.26.1: 완급(currentPaceComp)은 재생 스트레치 곱으로 여기서도 유지 — 배속 변경 후에도
+  // 문장의 net 템포(완급 × rate 비례)가 이어진다. 경계 판정(modelSpeed/trim)엔 미포함.
   setRate(rate: number): boolean {
     if (!this.player || this.currentModelSpeed === null) return false;
     if (this.currentModelSpeed !== sherpaModelSpeed(rate)) return false;
     if (this.currentTrimEnabled !== sherpaTrimEnabled(rate)) return false;
     try {
-      this.player.setPlaybackRate(sherpaPlaybackRate(rate, this.currentTrimFactor));
+      this.player.setPlaybackRate(sherpaPlaybackRate(rate, this.currentTrimFactor) * this.compFor(rate));
       return true;
     } catch {
       return false;
@@ -334,12 +348,13 @@ export class SherpaTtsEngine implements TtsEngine {
   // 분담(모델 speed × 트림)을 알고 있으므로, 잔여 재생 스트레치만 목표 배속에 맞춰 당긴다:
   // 곱 불변식(모델 × trim × 스트레치 = 설정 배속)을 그대로 푼 것. 품질은 이 문장 잔여 동안만
   // 타협(스트레치가 3을 넘으면 CER 저하 구간) — 다음 문장부터 정식 합성이 이어받는다.
+  // 완급은 compFor 로 요청 rate 기준 재계산(>3×=1 게이트 포함) — stale comp 방지(compFor 주석).
   setRateApprox(rate: number): boolean {
     if (!this.player || this.currentModelSpeed === null) return false;
     try {
       const target = Math.max(
         0.5,
-        Math.min(10, rate / (this.currentModelSpeed * this.currentTrimFactor)),
+        Math.min(10, (rate / (this.currentModelSpeed * this.currentTrimFactor)) * this.compFor(rate)),
       );
       this.player.setPlaybackRate(target);
       return true;
@@ -457,23 +472,43 @@ export class SherpaTtsEngine implements TtsEngine {
     return chunkForSynthesis(spoken).length > 1;
   }
 
-  // 루바토(문장 완급 변주) — 이 발화의 모델 speed 에 곱할 감속 인자. 원문 텍스트의 순수
-  // 함수(rate.ts sherpaRubato)라 keyOf 와 합성이 자동 일치한다. 해시 입력을 spoken(정규화
-  // 후)이 아닌 원문으로 두는 이유: 감속 정도는 어차피 주사위라 어느 쪽이든 무방하고, 원문
-  // 기준이면 keyOf 가 정규화를 추가로 돌 필요가 없다(tempoComp 는 "음절 수"라는 물리량이라
-  // spoken 필수 — 성격이 다르다). >3×(스마트 스피드)는 훑어 듣는 속도라 변주 무의미 — 제외.
-  private rubatoFactor(text: string, params: SpeakParams): number {
-    if (!params.rubato || sherpaTrimEnabled(params.rate)) return 1;
-    return sherpaRubato(text);
+  // 이 문장의 재생 완급(sherpaPaceComp 인자 조합 — 텍스트 순수 함수는 합성 시 Synth 에
+  // 실어 두고, rubato 설정·배속은 재생 시점 params 로 가른다). 파일에 굽지 않으므로 캐시
+  // 키와 무관(v1.26.1 — 모델 speed 의 F0 부작용 실측이 이동 근거, rate.ts).
+  private paceComp(synth: Synth, params: SpeakParams): number {
+    return sherpaPaceComp(synth.tempoComp, synth.rubatoRaw, {
+      rate: params.rate,
+      rubatoOn: !!params.rubato,
+    });
+  }
+
+  // 유효 재생속도 = 배속 보상식 × 문장 완급. 배속 계산은 과거 교차검증 CRITICAL 이 반복된
+  // 깨지기 쉬운 지점이라 수식을 한 곳에 묶는다(교차검증 권고 2026-07-20) — preload·playFile
+  // 이 이 헬퍼를 쓰고, setRate/setRateApprox 는 compFor(현재 문장 Synth 재계산)로 같은
+  // 곱을 유지한다.
+  private effectivePlaybackRate(synth: Synth, params: SpeakParams): number {
+    return sherpaPlaybackRate(params.rate, synth.trimFactor) * this.paceComp(synth, params);
+  }
+
+  // 현재 재생 중 문장의 완급을 "요청된 rate" 기준으로 재계산. 저장된 comp 를 재사용하면
+  // >3×(게이트로 1)에서 시작해 ≤3×로 내려오는 라이브 변경에서 완급이 소실된다(교차검증
+  // codex CRITICAL 2026-07-20 — 그 문장 잔여가 최대 ~17% 과속). 문장 전환 시 정식 경로가
+  // 이어받으므로 이 값의 수명은 현재 문장 잔여뿐.
+  private compFor(rate: number): number {
+    if (!this.currentSynth) return 1;
+    return sherpaPaceComp(this.currentSynth.tempoComp, this.currentSynth.rubatoRaw, {
+      rate,
+      rubatoOn: this.currentRubatoOn,
+    });
   }
 
   private keyOf(text: string, params: SpeakParams): string {
     const sid = params.voiceId || '0';
     // breath 는 숨소리가 파일에 구워지므로 "실효" 여부만 키에 포함(토글 시 재합성 유도).
-    // rubato 도 동일 — 감속이 파일에 구워지므로 실효(≠1) 여부를 키에 넣어 토글 시 재합성.
+    // (v1.26.1: 루바토 'r' 플래그 폐지 — 완급이 재생 스트레치로 이동해 파일에 안 구워진다.
+    //  같은 문장은 rubato 토글과 무관하게 같은 파일을 재사용한다.)
     const breath = this.breathEffective(text, params) ? 'b' : '';
-    const rub = this.rubatoFactor(text, params) !== 1 ? 'r' : '';
-    return `${sid}\u0000${sherpaModelSpeed(params.rate)}\u0000${langOf(params.language)}\u0000${breath}${rub}\u0000${text}`;
+    return `${sid}\u0000${sherpaModelSpeed(params.rate)}\u0000${langOf(params.language)}\u0000${breath}\u0000${text}`;
   }
 
   private makeSynth(text: string, params: SpeakParams): CacheEntry {
@@ -536,6 +571,7 @@ export class SherpaTtsEngine implements TtsEngine {
     this.currentModelSpeed = null;
     this.currentTrimEnabled = null;
     this.currentTrimFactor = 1;
+    this.currentRubatoOn = false;
     this.currentKey = null;
     this.currentSynth = null;
     if (this.currentUri) {
@@ -592,16 +628,11 @@ export class SherpaTtsEngine implements TtsEngine {
     const gen = async (input: string): Promise<{ samples: ArrayLike<number>; sampleRate: number }> => {
       const audio = await native.generateSpeechWithTimestamps(input, {
         sid: Number.parseInt(params.voiceId || '0', 10) || 0,
-        // 템포 평준화(rate.ts sherpaTempoComp): 짧은 문장의 과속 낭독을 소폭 늦춘다.
-        // 재생 보상식(playFile 의 sherpaPlaybackRate)에는 반영하지 않아 순수 템포만 변한다.
-        // 음절 산정은 정규화 "후"(spoken) 기준 — 숫자·기호가 많은 원문은 실제 발화가 훨씬
-        // 길어서 원문 기준이면 짧은 문장으로 오판된다(교차검증 지적 2026-07-19).
-        // + 루바토(v1.25.0): 문장 ~30%를 결정론으로 골라 0.90~0.96 감속(완급 변주 —
-        //   rubatoFactor 주석). 두 보정의 곱은 SPEED_COMP_FLOOR 로 클램프(실측 검증 구간 밖
-        //   과감속 방지). 둘 다 합성 speed 전용 — 재생 보상식 포함 금지(불변식 rate.ts).
-        speed:
-          sherpaModelSpeed(params.rate) *
-          Math.max(SPEED_COMP_FLOOR, sherpaTempoComp(spoken) * this.rubatoFactor(text, params)),
+        // v1.26.1: 합성 speed 는 "순수" 배속 분담(sherpaModelSpeed)만. 템포 평준화·루바토는
+        // 모델 speed 가 F0(음높이)까지 바꾼다는 실측(0.90 → +10Hz, tone_probe EXP2 — 문장마다
+        // 톤이 흔들리는 "톤 깨짐"의 원인)에 따라 재생 스트레치(피치 보존)로 이동했다 —
+        // paceComp/sherpaPaceComp. 완급 인자는 아래 반환 Synth 에 실어 재생부가 곱한다.
+        speed: sherpaModelSpeed(params.rate),
         extra: { lang },
         // 자막 결과는 버린다(sentence 단위 = 최소 비용) — fast 모드는 앞뒤 무음·쉼을 발화로
         // 깔고 계산한 글자수 비례 추정이라 하이라이트가 수백 ms 어긋났다(Whisper 대조 실측
@@ -674,7 +705,11 @@ export class SherpaTtsEngine implements TtsEngine {
     //    기기를 정상으로 오판한다(교차검증 지적 2026-07-13 — 계측을 저장 뒤로 옮기며 유입됨).
     // 불변식: rtf × 설정배속 ≥ 1 이면 재생이 준비를 앞질러 캐시가 마른다.
     recordSynth(Date.now() - synthStart, (samples.length / sampleRate) * 1000);
-    return { uri, boundaries, trimFactor };
+    // 완급 인자(재생 스트레치용) — 음절 산정은 정규화 "후"(spoken) 기준(숫자·기호 많은
+    // 원문은 실제 발화가 훨씬 길어 원문 기준이면 짧은 문장으로 오판, 교차검증 2026-07-19).
+    // 루바토 해시는 원문(text) 기준 — pacing.ts afterRubato(재생부)와 같은 입력이어야
+    // "루바토 문장 뒤 숨 고르기" 판정이 일치한다.
+    return { uri, boundaries, trimFactor, tempoComp: sherpaTempoComp(spoken), rubatoRaw: sherpaRubato(text) };
   }
 
   // 절 청크들을 순서대로 합성해 한 문장 파형으로 조립한다(직렬 — 이미 synthChain 안).
@@ -749,6 +784,9 @@ export class SherpaTtsEngine implements TtsEngine {
       this.currentModelSpeed = sherpaModelSpeed(params.rate);
       this.currentTrimEnabled = sherpaTrimEnabled(params.rate);
       this.currentTrimFactor = synth.trimFactor;
+      // rubato 설정 스냅샷(compFor 용) — setRate 라이브 경로가 이 문장의 완급을 요청 rate
+      // 기준으로 재계산해 곱는다(배속 변경 후에도 net 템포 유지, stale comp 방지).
+      this.currentRubatoOn = !!params.rubato;
       const boundaries = synth.boundaries;
       let bi = 0;
 
@@ -760,8 +798,8 @@ export class SherpaTtsEngine implements TtsEngine {
       // 무음 압축으로 이미 번 몫(trimFactor)만큼 스트레치를 덜어낸다(초고배속 또렷함 개선).
       try { (player as any).shouldCorrectPitch = true; } catch { /* noop */ }
       // 배속은 항상 재적용(캐시 키가 재생속도를 안 품어 프리로드 시점과 다를 수 있음 —
-      // 1 로 되돌리는 경우 포함).
-      try { player.setPlaybackRate(sherpaPlaybackRate(params.rate, synth.trimFactor)); } catch { /* noop */ }
+      // 1 로 되돌리는 경우 포함). × paceComp = 문장별 완급(피치 보존 스트레치, v1.26.1).
+      try { player.setPlaybackRate(this.effectivePlaybackRate(synth, params)); } catch { /* noop */ }
 
       // 하이라이트 전진 — JS 타이머(포그라운드, 60ms)와 네이티브 상태 이벤트(PiP에서도 도착)
       // 양쪽에서 부른다. bi 단조 증가라 두 경로가 겹쳐도 중복 없음.
@@ -821,7 +859,7 @@ export class SherpaTtsEngine implements TtsEngine {
       // 못한 몫 = 언더런/스톨 = 사용자가 듣는 끊김. "합성이 못 따라감(starved)"과 "재생 자체가
       // 끊김(stall)" 중 어느 쪽인지를 이 두 수치가 가른다(교차검증 지적 2026-07-13 — 계측이
       // 합성 쪽만 보면 반대 가설을 배제하지 못한다).
-      const playRate = sherpaPlaybackRate(params.rate, synth.trimFactor);
+      const playRate = this.effectivePlaybackRate(synth, params);
       let lastWall = 0;
       let lastPos = 0;
 

@@ -3,9 +3,9 @@
 // 왜 "합성" 들숨인가(v1.26.0): `<breath>` 태그는 이 Supertonic 팩이 지원하지 않는다는 게
 // 대조군 실측으로 반증됐다(2026-07-20, 무의미 태그 `<xyz>`가 더 긴 쉼 — tts.json 은 문자
 // 임베더뿐이라 특수 토큰 사전 자체가 없음). 태그는 "모르는 문자"로 읽혀 쉼이 0.13s 늘 뿐
-// 들숨이 아니었다("숨 거의 안 들림" 체감의 진범). 사람 낭독의 들숨은 300~2600Hz 대역의
-// 잡음성 소리(마찰 기류)라 대역 잡음 + 상승-급정지 엔벨로프로 근사한다 — newyoutube
-// supertonic_tts.py 이식(−18dB·0.30s)에서 검증된 파라미터.
+// 들숨이 아니었다("숨 거의 안 들림" 체감의 진범). 사람 낭독의 들숨은 잡음성 소리(마찰
+// 기류)라 대역 잡음 + 상승-잦아듦 엔벨로프로 근사한다 — 출발점은 newyoutube
+// supertonic_tts.py 이식(300~2600Hz·−18dB·0.30s), 이후 실기기 실청으로 재튜닝(아래 상수).
 //
 // 음량 원칙 두 가지(순서대로 적용, 작은 쪽 승):
 // ① 사람 낭독 관례 = 말소리 RMS 대비 −18dB(실측 근거: v1.22.0 의 −7.6dB 는 "허~ 하고
@@ -16,8 +16,11 @@
 
 import { BREATHY_THRESH } from './align';
 
-/** 사람 낭독 관례 음량: 말소리 RMS 대비(dB). */
-export const BREATH_REL_DB = -18;
+/** 들숨 음량: 말소리 RMS 대비(dB). v1.26.1: −18 → −24 — 실기기 실청 "약간 커서 빗자루
+ *  소리 같다"(사용자 2026-07-20). ⚠️ −18~−21 은 실효 없음: 문턱 클램프(fitPeak/p ≈ 말소리
+ *  −22dB 상당)가 이미 더 낮아 그쪽이 지배했다 — 실제로 줄이려면 클램프 아래로 내려야 한다.
+ *  −24 = 사람 낭독 관례(−15~−20)보다 조용한 배경 존재감(사용자가 안 들린다면 여기만 올리면 됨). */
+export const BREATH_REL_DB = -24;
 /** 문턱 대비 피크 안전 마진(0.85 = 문턱의 85%까지만). */
 const THRESH_MARGIN = 0.85;
 /** 소프트 클립 무릎(RMS 배수) — 과대 피크를 완만하게 눌러 들숨의 "칙" 튀는 순간을 없앤다
@@ -25,16 +28,20 @@ const THRESH_MARGIN = 0.85;
  *  실측 피크 스케일이 담당한다(재정규화가 crest 를 도로 키울 수 있어 상수 가정은 불충분 —
  *  교차검증 Claude 지적 2026-07-20). */
 const CREST_LIMIT = 3;
-/** 들숨 대역(Hz) — 사람 들숨의 기류 잡음 대역. */
+/** 들숨 대역(Hz). v1.26.1: 상한 2600 → 1500 — 광대역 잡음의 고역 성분이 "빗자루/쉬익"
+ *  질감의 원인(사용자 실청 2026-07-20). 사람 들숨의 에너지 중심(~1kHz)에 맞춰 어둡게. */
 const BAND_LO_HZ = 300;
-const BAND_HI_HZ = 2600;
-/** 엔벨로프: 서서히 차오르다(어택) 발화 직전 뚝 멈춘다(릴리즈) — 들숨의 자연 형태. */
+const BAND_HI_HZ = 1500;
+/** 엔벨로프: 서서히 차오르다(어택) 발화 직전 잦아든다(릴리즈) — 들숨의 자연 형태.
+ *  v1.26.1: 어택 지수 1.5→2(더 완만한 진입), 릴리즈 0.15→0.25(급정지 완화). */
 const ATTACK_PORTION = 0.65;
-const RELEASE_PORTION = 0.15;
+const RELEASE_PORTION = 0.25;
 
-/** 들숨 길이(ms): 240~320 결정론 변주 — 사람의 들숨 길이는 매번 조금씩 다르다.
+/** 들숨 길이(ms): 결정론 변주 — 사람의 들숨 길이는 매번 조금씩 다르다.
  *  같은 텍스트 = 같은 길이(캐시 파일과 정합). */
-const DUR_BASE_MS = 240;
+// v1.26.1: 240~320 → 180~260 — 실기기 1× 실청에서 들숨이 길어 존재감 과함(고배속에선
+// 스트레치로 줄어 안 거슬렸던 것). 사람 낭독의 가청 들숨도 200~300ms 급.
+const DUR_BASE_MS = 180;
 const DUR_VAR_MS = 80;
 export function breathDurMs(seedText: string): number {
   return DUR_BASE_MS + (djb2(seedText) % (DUR_VAR_MS + 1));
@@ -124,7 +131,7 @@ export function speechStats(pieces: ReadonlyArray<ArrayLike<number>>): SpeechSta
 
 /**
  * 들숨 파형 생성. 반환 샘플의 보장:
- * - RMS ≤ 말소리 RMS × 10^(−18/20) (사람 낭독 음량 관례)
+ * - RMS ≤ 말소리 RMS × 10^(BREATH_REL_DB/20) (사람 낭독 음량 관례)
  * - 피크 ≤ BREATHY_THRESH 문턱 × 0.85 (align.ts 가 이 구간을 "쉼"으로 분류 — 하이라이트
  *   가 들숨에서 멈췄다 발화 재개에 맞춰 전진)
  * - 결정론: 같은 (sampleRate, durMs, stats, seedText) → 같은 파형.
@@ -145,10 +152,10 @@ export function makeBreathSamples(
   biquad(x, sampleRate, BAND_LO_HZ, 'hp');
   biquad(x, sampleRate, BAND_HI_HZ, 'lp');
 
-  // ② 엔벨로프: 어택(t^1.5 로 차오름) → 유지 → 릴리즈(선형 감쇠, 발화 직전 급정지 느낌).
+  // ② 엔벨로프: 어택(t^2 로 차오름) → 유지 → 릴리즈(선형 감쇠 — 발화 앞에서 잦아듦).
   const attack = Math.floor(n * ATTACK_PORTION);
   const release = Math.floor(n * RELEASE_PORTION);
-  for (let i = 0; i < attack; i++) x[i] *= (i / attack) ** 1.5;
+  for (let i = 0; i < attack; i++) x[i] *= (i / attack) ** 2;
   for (let i = 0; i < release; i++) x[n - 1 - i] *= i / release;
 
   // ③ RMS 1 정규화 → 소프트 클립(과대 피크 완화) → 재정규화.
@@ -183,14 +190,14 @@ export function makeBreathSamples(
 // 구워져 있어 들숨은 어차피 그 뒤에서 시작한다.
 const GAP_BREATH_LEAD_MS = 30;
 const GAP_BREATH_TAIL_MS = 30;
-const GAP_BREATH_MAX_MS = 320;
-const GAP_BREATH_MIN_MS = 240;
+const GAP_BREATH_MAX_MS = 260;
+const GAP_BREATH_MIN_MS = 180;
 /** 이 미만의 쉼엔 들숨이 들어가지 않는다(= lead + min + tail). 고배속에선 문단 쉼 자체가
  *  이보다 짧아져 자동 제외 — 별도 배속 게이트 불필요. */
 export const GAP_BREATH_MIN_TOTAL_MS = GAP_BREATH_LEAD_MS + GAP_BREATH_MIN_MS + GAP_BREATH_TAIL_MS;
 // 대표 발화 레벨(고정): 문장별 실측 RMS 편차가 작아(σ≈1.1dB, 2026-07-18) 대표값으로
 // 충분하다. peak 0.55 는 하이라이트 문턱 클램프(makeBreathSamples ④)가 여기서는 물리지
-// 않게 하는 값 — 쉼 재생엔 정렬이 없으므로 관례 음량(−18dB)이 그대로 적용된다.
+// 않게 하는 값 — 쉼 재생엔 정렬이 없으므로 관례 음량(BREATH_REL_DB)이 그대로 적용된다.
 const GAP_SPEECH_STATS: SpeechStats = { rms: 0.07, peak: 0.55 };
 
 /** 쉼(gapMs) 안에 들어갈 문단 들숨. 안 들어가면 null. 결정론(같은 gapMs = 같은 파형). */

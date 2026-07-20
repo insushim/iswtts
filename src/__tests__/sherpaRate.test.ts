@@ -131,3 +131,28 @@ describe('sherpaRubato — 문장 완급 변주(v1.25.0)', () => {
     expect(anyNeutral).toBe(true);
   });
 });
+
+describe('sherpaPaceComp — 재생 완급 인자(v1.26.1: 합성 speed → 피치보존 스트레치 이동)', () => {
+  const { sherpaPaceComp, sherpaTempoComp, sherpaRubato, SPEED_COMP_FLOOR } = require('../tts/sherpa/rate');
+  test('기본 조합: tempoComp × rubato, 하한 SPEED_COMP_FLOOR·상한 1 클램프', () => {
+    expect(sherpaPaceComp(1, 1, { rate: 1, rubatoOn: true })).toBe(1);
+    expect(sherpaPaceComp(0.88, 0.9, { rate: 1, rubatoOn: true })).toBe(SPEED_COMP_FLOOR);
+    expect(sherpaPaceComp(0.95, 0.95, { rate: 1.5, rubatoOn: true })).toBeCloseTo(0.9025, 6);
+  });
+  test('rubatoOn=false 면 루바토 제외(템포 평준화만)', () => {
+    expect(sherpaPaceComp(0.92, 0.9, { rate: 1, rubatoOn: false })).toBeCloseTo(0.92, 6);
+  });
+  test('>3×(스마트 스피드)는 완급 무시(1) — 압축 몫 계산과 불간섭', () => {
+    expect(sherpaPaceComp(0.88, 0.9, { rate: 4, rubatoOn: true })).toBe(1);
+  });
+  test('비정상 입력(NaN·0·음수)은 1 취급 — 재생속도 오염 방지', () => {
+    expect(sherpaPaceComp(NaN, 0.9, { rate: 1, rubatoOn: true })).toBeCloseTo(0.9, 6);
+    expect(sherpaPaceComp(0.95, 0, { rate: 1, rubatoOn: true })).toBeCloseTo(0.95, 6);
+    expect(sherpaPaceComp(-1, NaN, { rate: 1, rubatoOn: true })).toBe(1);
+  });
+  test('최저 배속(0.5×)에서도 최종 재생속도 = 1 × comp ≥ expo-audio 하한(0.5)', () => {
+    const comp = sherpaPaceComp(sherpaTempoComp('짧다.'), sherpaRubato('짧다.'), { rate: 0.5, rubatoOn: true });
+    expect(comp).toBeGreaterThanOrEqual(SPEED_COMP_FLOOR);
+    expect(1 * comp).toBeGreaterThanOrEqual(0.5);
+  });
+});
