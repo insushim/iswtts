@@ -19,13 +19,32 @@ function writeU16LE(buf: Uint8Array, offset: number, v: number): void {
   buf[offset + 1] = (v >>> 8) & 0xff;
 }
 
-export function buildSilenceWav(seconds: number, sampleRate = 8000): Uint8Array {
+/** float 샘플(−1..1) → 16-bit PCM mono WAV. 문단 들숨(gapPlayer)처럼 "무음이 아닌"
+ *  짧은 소리 파일을 런타임에 만들 때 쓴다(무음 전용 buildSilenceWav 의 일반형). */
+export function buildPcmWav(samples: ArrayLike<number>, sampleRate: number): Uint8Array {
   const channels = 1;
-  const bytesPerSample = 2; // 16-bit
-  const frames = Math.max(1, Math.round(seconds * sampleRate));
+  const bytesPerSample = 2;
+  const frames = samples.length;
   const dataSize = frames * channels * bytesPerSample;
-  const buf = new Uint8Array(HEADER_SIZE + dataSize); // 데이터부는 0(무음) 그대로
+  const buf = new Uint8Array(HEADER_SIZE + dataSize);
+  writeHeader(buf, sampleRate, channels, bytesPerSample, dataSize);
+  for (let i = 0; i < frames; i++) {
+    const v = Math.max(-1, Math.min(1, samples[i]));
+    const s = Math.round(v * 32767);
+    const off = HEADER_SIZE + i * 2;
+    buf[off] = s & 0xff;
+    buf[off + 1] = (s >> 8) & 0xff;
+  }
+  return buf;
+}
 
+function writeHeader(
+  buf: Uint8Array,
+  sampleRate: number,
+  channels: number,
+  bytesPerSample: number,
+  dataSize: number,
+): void {
   writeAscii(buf, 0, 'RIFF');
   writeU32LE(buf, 4, 36 + dataSize);
   writeAscii(buf, 8, 'WAVE');
@@ -39,5 +58,14 @@ export function buildSilenceWav(seconds: number, sampleRate = 8000): Uint8Array 
   writeU16LE(buf, 34, bytesPerSample * 8); // bitsPerSample
   writeAscii(buf, 36, 'data');
   writeU32LE(buf, 40, dataSize);
+}
+
+export function buildSilenceWav(seconds: number, sampleRate = 8000): Uint8Array {
+  const channels = 1;
+  const bytesPerSample = 2; // 16-bit
+  const frames = Math.max(1, Math.round(seconds * sampleRate));
+  const dataSize = frames * channels * bytesPerSample;
+  const buf = new Uint8Array(HEADER_SIZE + dataSize); // 데이터부는 0(무음) 그대로
+  writeHeader(buf, sampleRate, channels, bytesPerSample, dataSize);
   return buf;
 }

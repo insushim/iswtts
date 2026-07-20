@@ -12,6 +12,8 @@
 //   왜곡 0 배속 f≈1.1~1.3)하고, 그만큼 스트레치를 덜어낸다(실효 스트레치 = 3/f).
 //   ≤3×는 미적용 — 사용자가 청감 확정한 소리를 바꾸지 않는다.
 
+import { endsWithEllipsis } from '../../lib/pacing';
+
 export const SHERPA_QUALITY_MAX = 3.2; // 품질 무손상 임계(시스템 음성 전환 옵션의 기준점)
 const SONIC_FIRST_MAX = 3.0; // 스트레치 단독 온전 상한
 const MODEL_MAX = 3.0; // 모델 speed ≥4.0 = 전 구간 무음(실측) — 하드 경계
@@ -57,15 +59,24 @@ export function sherpaTempoComp(text: string): number {
 const RUBATO_PORTION = 0.3;
 const RUBATO_MIN = 0.9;
 const RUBATO_MAX = 0.96;
+// 문맥 완급(v1.26.0): 말줄임(…)으로 끝나는 문장은 주사위와 무관하게 "항상" 느긋하게 —
+// 사람 낭독자는 여운 문장을 끌어 읽는다(일레븐랩스류 대형 모델이 학습으로 얻는 문맥
+// 프로소디를, 우리는 구두점 단서로 규칙화). 감속 폭은 검증 구간(0.90 하한) 안에서 살짝
+// 깊게 0.90~0.94 — pacing.ts 의 말줄임 여운 쉼(+250ms)과 합쳐져 하나의 관습이 된다.
+const ELLIPSIS_RUBATO_MIN = 0.9;
+const ELLIPSIS_RUBATO_MAX = 0.94;
 // tempoComp × rubato 곱의 하한 — 실측 검증 구간(0.88 단독 −11%) 근방까지만 허용.
 export const SPEED_COMP_FLOOR = 0.85;
 export function sherpaRubato(text: string): number {
   // djb2 — pacing.ts 지터와 같은 계열(결정론 변주의 공용 도구).
   let h = 5381;
   for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  const v = (h >>> 10) % 1000; // 감속 정도 주사위(선택과 다른 비트 대역)
+  if (endsWithEllipsis(text)) {
+    return ELLIPSIS_RUBATO_MIN + ((ELLIPSIS_RUBATO_MAX - ELLIPSIS_RUBATO_MIN) * v) / 1000;
+  }
   const u = (h >>> 0) % 1000; // 선택 주사위(하위 비트)
   if (u >= RUBATO_PORTION * 1000) return 1;
-  const v = (h >>> 10) % 1000; // 감속 정도 주사위(선택과 다른 비트 대역)
   return RUBATO_MIN + ((RUBATO_MAX - RUBATO_MIN) * v) / 1000;
 }
 

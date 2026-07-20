@@ -36,6 +36,13 @@ const ENDS_DIALOGUE = /["'”’」』]$/;
 const STARTS_DIALOGUE = /^["'“‘「『]/;
 const ELLIPSIS_END = /(?:…|⋯|‥|\.{3})$/;
 
+/** 문장이 말줄임(꼬리 따옴표류 무시)으로 끝나는가 — 여운 문장 판정.
+ *  쉼(sentenceGapMs 말줄임 여운)과 완급(rate.ts sherpaRubato 의 항상-감속)이 같은 판정을
+ *  공유해 "말줄임 = 느긋하게 읽고 길게 쉼"이 하나의 낭독 관습으로 묶인다(v1.26.0). */
+export function endsWithEllipsis(sentence: string): boolean {
+  return ELLIPSIS_END.test(sentence.trim().replace(TRAIL_QUOTES, ''));
+}
+
 // djb2 문자열 해시 — 암호학적 품질 불필요, 결정성만 필요(캐시·재현성).
 function hash(s: string): number {
   let h = 5381;

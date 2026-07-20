@@ -41,3 +41,28 @@ describe('buildSilenceWav (앵커용 무음 WAV)', () => {
     expect(u32(wav, 40)).toBe(2);
   });
 });
+
+describe('buildPcmWav (float 샘플 → 16-bit WAV — 문단 들숨용 일반형)', () => {
+  const { buildPcmWav } = require('../lib/silenceWav');
+
+  it('유효 헤더 + 크기 필드 일치(임의 샘플레이트)', () => {
+    const samples = [0, 0.5, -0.5, 1, -1];
+    const wav = buildPcmWav(samples, 22050);
+    expect(ascii(wav, 0, 4)).toBe('RIFF');
+    expect(u32(wav, 24)).toBe(22050);
+    expect(u32(wav, 40)).toBe(samples.length * 2);
+    expect(wav.length).toBe(44 + samples.length * 2);
+  });
+
+  it('샘플 값이 16-bit 로 정확히 부호화되고 ±1 초과는 클램프', () => {
+    const wav = buildPcmWav([0.5, -0.5, 2, -2], 8000);
+    const s16 = (off: number) => {
+      const v = wav[44 + off * 2] | (wav[44 + off * 2 + 1] << 8);
+      return v >= 0x8000 ? v - 0x10000 : v;
+    };
+    expect(s16(0)).toBe(Math.round(0.5 * 32767));
+    expect(s16(1)).toBe(Math.round(-0.5 * 32767)); // Math.round 는 -.5 를 위로 올림(-16383)
+    expect(s16(2)).toBe(32767);
+    expect(s16(3)).toBe(-32767);
+  });
+});

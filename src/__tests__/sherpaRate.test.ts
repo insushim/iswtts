@@ -110,4 +110,24 @@ describe('sherpaRubato — 문장 완급 변주(v1.25.0)', () => {
       expect(f === 1 || (f >= 0.9 && f <= 0.96)).toBe(true);
     }
   });
+  test('문맥 완급(v1.26.0): 말줄임 문장은 주사위와 무관하게 항상 감속 [0.90, 0.94]', () => {
+    for (let i = 0; i < 100; i++) {
+      const f = sherpaRubato(`그는 아무 말도 하지 못했다 ${i}…`);
+      expect(f).toBeGreaterThanOrEqual(0.9);
+      expect(f).toBeLessThanOrEqual(0.94);
+    }
+    // 닫는 따옴표가 붙어도 여운 판정("…' 로 끝나는 대사).
+    expect(sherpaRubato('"어쩌면, 그럴지도…"')).toBeLessThanOrEqual(0.94);
+    // 세 점 마침표(...)도 말줄임.
+    expect(sherpaRubato('기억이 나지 않았다...')).toBeLessThanOrEqual(0.94);
+  });
+  test('말줄임이 문장 중간에만 있으면 일반 주사위 규칙(항상-감속 아님)', () => {
+    // 같은 꼬리(평서)로 끝나는 문장 무리에서 1 이 존재해야 한다 — 중간 말줄임이 전부를
+    // 감속시키면 실패.
+    let anyNeutral = false;
+    for (let i = 0; i < 60; i++) {
+      if (sherpaRubato(`그는… 잠시 망설였지만 결국 문을 열었다 ${i}.`) === 1) anyNeutral = true;
+    }
+    expect(anyNeutral).toBe(true);
+  });
 });

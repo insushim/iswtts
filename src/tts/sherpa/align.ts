@@ -26,7 +26,9 @@ const PAUSE_MIN_MS = 120;
 // 약한 마찰음이 순간적으로 이 문턱 아래로 내려가도 120ms 미만이라 쉼이 되지 않는다.
 // cap 0.05: 고음량 문장(peak→1.0)에서도 들숨(peak 의 ~4%)이 cap 아래에 남아 쉼으로
 // 분류된다(cap 0.03 이면 peak>0.75 부터 미검출 — 교차검증 지적 2026-07-19).
-const BREATHY_THRESH: QuietThresh = { rel: 0.06, floor: 0.006, cap: 0.05 };
+// export 이유(v1.26.0): 합성 들숨(breathWav.ts)이 자기 피크를 이 문턱 "아래"로 스케일해
+// 들숨=쉼 분류를 생성 시점에 구조적으로 보장한다 — 값이 바뀌면 두 쪽이 자동 동행.
+export const BREATHY_THRESH: QuietThresh = { rel: 0.06, floor: 0.006, cap: 0.05 };
 
 export function estimateWordBoundaries(
   text: string,

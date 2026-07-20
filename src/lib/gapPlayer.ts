@@ -11,7 +11,8 @@
 
 import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
 import { File, Paths } from 'expo-file-system';
-import { buildSilenceWav } from './silenceWav';
+import { buildSilenceWav, buildPcmWav } from './silenceWav';
+import { makeGapBreath } from '../tts/sherpa/breathWav';
 import { disposePlayer } from '../tts/disposePlayer';
 
 const STEP_MS = 50;
@@ -20,9 +21,33 @@ export const GAP_MIN_MS = 60; // 이보다 짧은 쉼은 플레이어 기동 지
 // ⚠️ 최저 배속을 더 낮추면 이 값도 함께 — 아니면 극저속에서 쉼이 조용히 잘린다.
 const GAP_MAX_MS = 1500;
 
-function gapFileUri(ms: number): string {
-  const f = new File(Paths.cache, `gap-${ms}.wav`);
-  const wav = buildSilenceWav(ms / 1000);
+// ── 문단 들숨(v1.26.0) ─────────────────────────────────
+// 사람 낭독자는 새 문단(장면 전환) 앞에서 크게 숨을 들이쉰다 — 문단 쉼(pacing.ts
+// PARAGRAPH_MS)의 무음 일부를 합성 들숨(breathWav.ts makeGapBreath — 근거·파라미터·길이
+// 적응 로직 그 파일)으로 채운다. 재생 단계라 합성 캐시 무손상. 옵션(settings.breathSound)
+// 일 때만, 그리고 쉼에 들숨이 통째로 들어갈 때만(짧으면 makeGapBreath 가 null — 절단된
+// 들숨은 릴리즈가 사라져 딱 소리, 교차검증 Gemini 지적 2026-07-20).
+const BREATH_GAP_SR = 22050; // 들숨 대역 상한(2.6kHz)에 충분 + 파일 소형
+
+// 들숨 파일명 세대 — 파형 알고리즘·파라미터가 바뀌면 +1 해서 구형 캐시를 무효화할 것.
+// 크기 검사만으로는 "같은 길이·다른 파형"을 못 잡는다(교차검증 codex 지적 2026-07-20 —
+// 실제로 개발 중 고정길이→적응형 전환에서 이 케이스가 났다). 무음 파일은 내용이 0뿐이라
+// 세대 불필요.
+const BREATH_FILE_GEN = 2;
+
+function gapFileUri(ms: number, breath: boolean): string {
+  const gb = breath ? makeGapBreath(ms, BREATH_GAP_SR) : null;
+  const f = new File(Paths.cache, gb ? `gap-b${BREATH_FILE_GEN}-${ms}.wav` : `gap-${ms}.wav`);
+  let wav: Uint8Array;
+  if (gb) {
+    const total = Math.round((BREATH_GAP_SR * ms) / 1000);
+    const lead = Math.round((BREATH_GAP_SR * gb.leadMs) / 1000);
+    const samples = new Array<number>(total).fill(0);
+    for (let i = 0; i < gb.samples.length && lead + i < total; i++) samples[lead + i] = gb.samples[i];
+    wav = buildPcmWav(samples, BREATH_GAP_SR);
+  } else {
+    wav = buildSilenceWav(ms / 1000);
+  }
   // 크기 불일치 = 잘린 파일(과거 크래시) — 재생성(mediaSession 앵커와 동일 방침).
   if (f.exists && f.size !== wav.length) f.delete();
   if (!f.exists) {
@@ -33,10 +58,12 @@ function gapFileUri(ms: number): string {
 }
 
 /**
- * ms 만큼 무음을 재생한 뒤 onDone 을 부른다. 반환값 = 취소 함수(취소 시 onDone 미호출).
+ * ms 만큼 무음(옵션: 문단 들숨 포함)을 재생한 뒤 onDone 을 부른다. 반환값 = 취소 함수
+ * (취소 시 onDone 미호출). opts.breath 는 쉼에 들숨이 통째로 들어갈 때만 실효
+ * (breathWav.ts GAP_BREATH_MIN_TOTAL_MS — 짧으면 무음 쉼으로 폴백).
  * 실패(파일/플레이어 오류) 시엔 즉시 onDone — 쉼이 빠질지언정 낭독이 멈추진 않는다.
  */
-export function playGap(ms: number, onDone: () => void): () => void {
+export function playGap(ms: number, onDone: () => void, opts?: { breath?: boolean }): () => void {
   let finished = false;
   let player: AudioPlayer | null = null;
   let sub: { remove: () => void } | null = null;
@@ -52,9 +79,12 @@ export function playGap(ms: number, onDone: () => void): () => void {
   };
   try {
     const rounded = Math.min(GAP_MAX_MS, Math.max(STEP_MS, Math.round(ms / STEP_MS) * STEP_MS));
-    player = createAudioPlayer(gapFileUri(rounded));
+    player = createAudioPlayer(gapFileUri(rounded, !!opts?.breath));
     sub = player.addListener('playbackStatusUpdate', (st) => {
-      if (st.didJustFinish) finish(true);
+      // error: 파일 손상 등으로 재생이 실패하면 didJustFinish 가 영영 안 와서 낭독이 그
+      // 자리에 멈춘다(교차검증 codex 지적 2026-07-20) — 쉼을 포기하고 즉시 진행(catch
+      // 경로와 같은 방침: 쉼이 빠질지언정 낭독이 멈추진 않는다).
+      if (st.didJustFinish || st.error) finish(true);
     });
     player.play();
   } catch {

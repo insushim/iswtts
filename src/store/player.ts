@@ -310,12 +310,19 @@ export const usePlayer = create<PlayerState>((set, get) => {
         } else {
           // 무음 재생으로 쉼(gapPlayer 주석 참조 — setTimeout 금지). 쉼 동안의 정지/이탈/
           // 수동 이동은 pendingGap 정리 + epoch 로 무효화.
-          const cancel = playGap(gap, () => {
-            pendingGap = null;
-            if (myEpoch !== epoch) return;
-            set({ index: nextIndex, wordStart: 0, wordLen: 0 });
-            speakCurrent();
-          });
+          // 문단 들숨(v1.26.0): 숨소리 옵션이 켜져 있으면 문단 전환 쉼의 무음 일부를 합성
+          // 들숨으로 채운다(gapPlayer 주석) — 사람 낭독자의 "새 문단 앞 큰 숨". 쉼 길이가
+          // 충분할 때만 실효(고배속 자동 제외)라 여기선 문단 여부만 넘긴다.
+          const cancel = playGap(
+            gap,
+            () => {
+              pendingGap = null;
+              if (myEpoch !== epoch) return;
+              set({ index: nextIndex, wordStart: 0, wordLen: 0 });
+              speakCurrent();
+            },
+            { breath: cfg.breathSound && st.paraStarts.has(nextIndex) },
+          );
           pendingGap = { cancel, nextIndex };
         }
       } else {

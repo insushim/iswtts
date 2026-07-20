@@ -19,8 +19,9 @@ const MIN_CHUNK = 12;
 const MAX_CHUNKS = 6;
 
 // 절 경계로 취급하는 구두점(뒤따르는 닫는 따옴표·괄호·한국식 인용부호까지 청크에 포함).
-// injectBreathInline 의 삽입 위치 탐색과 공유(정규식 이중화 방지) — 전역 플래그 정규식이므로
-// 사용 전 lastIndex 리셋 필수.
+// 전역 플래그 정규식이므로 사용 전 lastIndex 리셋 필수.
+// (v1.26.0: `<breath>` 태그 인라인 주입(injectBreathInline)은 "이 팩이 태그를 지원하지
+//  않음" 대조군 실측으로 폐기 — 들숨은 절 이음새에 합성 파형으로 삽입한다. breathWav.ts.)
 const CLAUSE_BREAK = /[,，、;；]['"’”」』)\]）】]*\s*/g;
 
 /**
@@ -29,41 +30,6 @@ const CLAUSE_BREAK = /[,，、;；]['"’”」』)\]）】]*\s*/g;
  */
 export function hasClauseComma(text: string): boolean {
   return /[,，、;；]/.test(text.replace(/(\d),(?=\d)/g, '$1'));
-}
-
-/** 숨을 심기엔 너무 짧은 후속 절(글자) — "하나, 둘, 셋" 열거에서 헐떡임 방지. */
-const BREATH_MIN_CLAUSE = 6;
-
-/**
- * 문장의 절 경계(쉼표류) 뒤마다 <breath> 를 심는다(SherpaTtsEngine 의 숨소리 옵션 —
- * 모델이 태그를 들숨으로 렌더, 실측 2026-07-18 태그 미발음 +0.3s, 다중 태그도 정상).
- * v1.24.0: "쉼표 자리에서 거의 항상 숨"(사용자 요청 2026-07-19) — 가운데 1회 → 전 경계.
- * 제외: 문장 끝 쉼표(뒤에 본문 없음), 숫자 사이 쉼표(1,50 비정형 — 정형 12,500 은
- * 정규화가 소거), 후속 절이 너무 짧은 경계(열거 헐떡임 방지). 경계가 없으면 원문 그대로.
- */
-export function injectBreathInline(text: string): string {
-  const ends: number[] = [];
-  // matchAll 은 정규식을 내부 복제해 lastIndex 를 공유하지 않는다(전역 정규식 오염 원천 차단).
-  for (const m of text.matchAll(CLAUSE_BREAK)) {
-    const end = m.index + m[0].length;
-    if (end >= text.length) continue;
-    if (/\d/.test(text[m.index - 1] ?? '') && /\d/.test(text[end])) continue;
-    ends.push(end);
-  }
-  if (!ends.length) return text;
-  // 다음 경계(또는 문장 끝)까지의 본문 길이가 임계 미만인 경계는 건너뛴다.
-  const eligible = ends.filter((at, i) => {
-    const until = i + 1 < ends.length ? ends[i + 1] : text.length;
-    return until - at >= BREATH_MIN_CLAUSE;
-  });
-  if (!eligible.length) return text;
-  let out = '';
-  let pos = 0;
-  for (const at of eligible) {
-    out += `${text.slice(pos, at)}<breath> `;
-    pos = at;
-  }
-  return out + text.slice(pos);
 }
 
 /**

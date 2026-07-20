@@ -116,3 +116,16 @@ describe('afterRubato 숨 고르기(v1.25.0)', () => {
     expect(sentenceGapMs(P, N, { paragraphBreak: false, rate: 3.5, afterRubato: true })).toBe(0);
   });
 });
+
+describe('endsWithEllipsis — 여운 문장 판정(쉼·완급 공용, v1.26.0)', () => {
+  const { endsWithEllipsis } = require('../lib/pacing');
+  it('말줄임(…·⋯·... 및 꼬리 따옴표 조합)로 끝나면 참', () => {
+    expect(endsWithEllipsis('그는 아무 말도 하지 못했다…')).toBe(true);
+    expect(endsWithEllipsis('기억이 나지 않았다...')).toBe(true);
+    expect(endsWithEllipsis('"어쩌면, 그럴지도…"')).toBe(true);
+  });
+  it('평서·중간 말줄임은 거짓', () => {
+    expect(endsWithEllipsis('그는 문을 열었다.')).toBe(false);
+    expect(endsWithEllipsis('그는… 결국 문을 열었다.')).toBe(false);
+  });
+});

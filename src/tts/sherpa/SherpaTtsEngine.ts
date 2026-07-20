@@ -15,7 +15,8 @@ import {
 import { disposePlayer } from '../disposePlayer';
 import { compressSilence, trimEdgeSilence, LEAD_PAD_MS, TRAIL_PAD_MS, EDGE_FADE_MS } from './smartSpeed';
 import { normalizeForSpeech } from './normalizeKo';
-import { chunkForSynthesis, injectBreathInline, hasClauseComma, chunkPauseJitterMs } from './chunkKo';
+import { chunkForSynthesis, hasClauseComma, chunkPauseJitterMs } from './chunkKo';
+import { makeBreathSamples, speechStats, breathDurMs } from './breathWav';
 import { estimateWordBoundaries, type WordBoundary } from './align';
 import { recordSynth, recordStarvation, recordPlaybackProgress } from './stats';
 import { subtitlesVisible, onVisibilityChange } from '../../lib/visibility';
@@ -75,17 +76,20 @@ const SYNTH_TIMEOUT_MS = 60_000;
 // 구값 120(합계 240ms)은 그 절반이라 분할 문장만 절 경계를 몰아쳐 "갑자기 빨라짐/씹힘"으로
 // 들렸다(사용자 보고). 문장 간 쉼(TRAIL 320+LEAD 40=360ms)을 넘지 않게 360 에 캡.
 const INTER_CHUNK_PAUSE_MS = 240;
-// 숨(<breath>)이 심긴 절 머리 앞 이음새는 들숨(~0.4s)이 쉼 역할을 대신하므로 짧게 유지 —
-// 240 을 그대로 쓰면 쉼+들숨 ≈ 0.8s 로 절 경계가 늘어진다. 140 인 이유: align.ts 의 쉼 판정
-// 임계(PAUSE_MIN_MS=120)와 동률이면 10ms 분석창 양자화로 110 으로 검출돼 하이라이트가 숨
-// 구간을 발화로 오인할 수 있다(교차검증 지적 2026-07-18) — 한 창(+20ms) 여유.
-const BREATH_CHUNK_PAUSE_MS = 140;
+// 합성 들숨(v1.26.0)이 든 이음새 구조 = 절 꼬리 80 + 앞 무음 40 + 들숨 240~320 + 뒤 무음
+// 60 + 절 머리 40 ≈ 460~540ms. 사람 낭독의 "숨 쉬는 절 경계"는 일반 절 경계(400~440ms)보다
+// 조금 길다 — 들숨이 쉼의 일부라 자연스럽다. 뒤 무음(60ms)은 들숨 급정지와 발화 어택을
+// 분리하는 최소 간격.
+// ⚠️ 하이라이트 정합: 들숨 피크는 생성 시점에 align.ts 의 BREATHY_THRESH 아래로 스케일돼
+// (breathWav.ts) 앞뒤 무음과 함께 하나의 긴 쉼(≥ PAUSE_MIN_MS)으로 분류된다 — 하이라이트가
+// 들숨에서 멈췄다 발화 재개에 맞춰 전진.
+const BREATH_PRE_MS = 40;
+const BREATH_POST_MS = 60;
 const CHUNK_TRAIL_PAD_MS = 80;
-// 숨소리(breathApplies): 쉼표 있는 문장의 가운데 절 경계에 <breath> 태그를 인라인으로
-// 심는다 — 모델이 낭독 흐름 안에서 자연 음량으로 직접 숨쉰다. (v1.22.0 의 "별도 합성 숨을
-// 문장 앞에 부착"은 이물감·과대 음량으로 폐기 — doSynthesize 의 주석 참조.)
-// 발동 최소 길이(원문 글자). 연혁: 60(절 분할 임계와 묶임, "거의 안 쉰다" 피드백) → 30
-// (v1.22.2) → 12(v1.24.0, "쉼표 자리에서 거의 항상 숨" 요청 — 아주 짧은 문장만 제외).
+// 숨소리(breathApplies)의 값싼 1차 게이트 최소 길이(원문 글자). 실제 발동(breathEffective)은
+// "절 분할이 일어난 문장"(청크 2+)에만 — 들숨은 분할 이음새에 파형으로 삽입되므로(v1.26.0,
+// `<breath>` 태그는 이 팩 미지원 실측으로 폐기 — breathWav.ts 주석) 이음새가 없으면 심을
+// 곳이 없다. 사람 낭독자도 짧은 문장의 쉼표마다 숨쉬지 않는다(들숨 간격 실측 2~6초).
 const BREATH_MIN_CHARS = 12;
 
 // sherpa 빌드의 Supertonic 은 5개 언어만 지원(en/ko/es/pt/fr). lang 미지정 시 네이티브가
@@ -441,17 +445,16 @@ export class SherpaTtsEngine implements TtsEngine {
   }
 
   // 숨소리가 "실제로" 이 발화 오디오에 들어가는가 — keyOf 는 반드시 이 판정을 쓴다.
-  // 게이트(breathApplies)만으로 키를 가르면 "키는 b 인데 삽입은 no-op"인 케이스(문장 끝
-  // 쉼표뿐·정규화로 쉼표 소실 등)에서 숨 없는 동일 WAV 가 별도 키로 이중 합성된다(교차검증
-  // 지적 2026-07-18). doSynthesize 와 동일 경로(정규화→분할→인라인 시도)로 선판정해
-  // 키=오디오 일치를 구조적으로 보장한다.
+  // 게이트(breathApplies)만으로 키를 가르면 "키는 b 인데 삽입은 no-op"인 케이스(정규화로
+  // 쉼표 소실·분할 미발생 등)에서 숨 없는 동일 WAV 가 별도 키로 이중 합성된다(교차검증
+  // 지적 2026-07-18). doSynthesize 와 동일 경로(정규화→분할)로 선판정해 키=오디오 일치를
+  // 구조적으로 보장한다. v1.26.0: 들숨은 절 이음새 삽입뿐이므로 "분할됨(청크 2+)"이 곧 실효.
   // 비용: 문장당 정규화·분할 1회 추가(짧은 문자열 정규식 — 합성 비용 대비 무시 가능) —
   // breath 옵션이 꺼져 있으면 게이트에서 즉시 false 라 비용 0.
   private breathEffective(text: string, params: SpeakParams): boolean {
     if (!this.breathApplies(text, params)) return false;
     const spoken = langOf(params.language) === 'ko' ? normalizeForSpeech(text) : text;
-    const chunks = chunkForSynthesis(spoken);
-    return chunks.length > 1 || injectBreathInline(chunks[0]) !== chunks[0];
+    return chunkForSynthesis(spoken).length > 1;
   }
 
   // 루바토(문장 완급 변주) — 이 발화의 모델 speed 에 곱할 감속 인자. 원문 텍스트의 순수
@@ -574,21 +577,13 @@ export class SherpaTtsEngine implements TtsEngine {
     // 장문은 절(쉼표) 단위로 나눠 각각 합성 후 이어 붙인다(chunkKo.ts — 장문 운율 붕괴 대책).
     const chunks = lang === 'ko' ? chunkForSynthesis(spoken) : [spoken];
 
-    // 숨소리(선택): 긴 문장의 "가운데 절 머리"에 <breath> 태그를 심어 모델이 낭독 흐름 안에서
-    // 직접 숨쉬게 한다 — 같은 목소리·자연 음량·운율로 녹아든다(실측 2026-07-18: 태그는 발음
-    // 안 됨, +0.4~0.5s 들숨). v1.22.0 의 "따로 합성한 숨을 문장 앞에 붙이기"는 문장 시작 전
-    // "허~" 하는 이물감 + 과대 음량(말소리 −7.6dB)으로 폐기(사용자 실청 피드백). 숨이 절 안에
-    // 있으므로 하이라이트는 그 구간에서 실측 ~0.4s 만큼 잠깐 느긋해졌다 다음 쉼에서 자기 보정.
-    // v1.24.0: "쉼표 자리에서 거의 항상 숨"(사용자 요청) — 절 이음새(청크 머리)마다 +
-    // 각 청크 내부 절 경계에도 인라인 주입(다중 태그 정상 렌더 실측 2026-07-19, +0.27s/개).
-    // 정규화(spoken)에서 쉼표가 사라진 예외는 심을 곳이 없어 그대로 — 무해(결정성 유지).
-    const breathOn = this.breathApplies(text, params);
-    if (breathOn) {
-      for (let i = 0; i < chunks.length; i++) {
-        const inner = injectBreathInline(chunks[i]);
-        chunks[i] = i > 0 ? `<breath> ${inner}` : inner;
-      }
-    }
+    // 숨소리(선택, v1.26.0): 절 분할이 일어난 문장의 이음새에 "합성 들숨" 파형을 삽입한다
+    // (synthesizeChunks — 파라미터·근거는 breathWav.ts). 연혁: v1.22.0 "따로 합성한 숨을
+    // 문장 앞에 부착"은 과대 음량(말소리 −7.6dB)으로 기각 → v1.22.1~1.25 `<breath>` 태그
+    // 인라인은 "이 팩이 태그를 지원하지 않음"이 대조군 실측으로 반증돼 폐기(무의미 태그와
+    // 차이 없음, 삽입 구간 −45dB 사실상 무음 — "숨 거의 안 들림" 체감의 진범, 2026-07-20).
+    // 판정은 breathEffective 와 동일 조건(분할됨) — 키=오디오 정합.
+    const breathOn = this.breathApplies(text, params) && chunks.length > 1;
 
     // ⚠️ generateSpeech 로 바꾸지 말 것: 그 경로의 일반 모델 분기는 네이티브에서
     // dispatchGenerate(text, sid, speed)로 options(extra.lang)를 통째로 버린다(소스 실측
@@ -700,13 +695,24 @@ export class SherpaTtsEngine implements TtsEngine {
       pieces.push(trimEdgeSilence(audio.samples, sampleRate, LEAD_PAD_MS, trail, EDGE_FADE_MS));
     }
     // 이음새 쉼: 기본 INTER_CHUNK_PAUSE_MS − 결정론 지터(195~240ms — chunkPauseJitterMs
-    // 주석, v1.25.0). 숨 모드면 모든 이음새 머리에 들숨이 심겨 있어(doSynthesize) 들숨이
-    // 쉼 역할을 대신 — 전부 BREATH_CHUNK_PAUSE_MS 고정(들숨 길이 자체가 자연 변주).
-    // 지터 해시 입력은 "그 이음새 뒤 절"(chunks[i]) — 숨 태그가 붙기 전·후 무관하게 숨
-    // 모드에선 지터 미사용이라 태그 유무가 결과에 영향 없다.
+    // 주석, v1.25.0). 숨 모드면 이음새마다 "앞 무음 + 합성 들숨 + 뒤 무음"(BREATH_PRE/POST
+    // 주석) — 들숨 길이(240~320ms)는 뒤 절 텍스트의 결정론 변주(breathDurMs), 파형도 같은
+    // 시드라 같은 문장은 항상 같은 숨(캐시 재생성 간 정합). 음량은 이 문장 발화 실측
+    // RMS 기준 −18dB + 하이라이트 쉼 문턱 클램프(breathWav.ts).
+    // ⚠️ 전체 무음(합성 실패 성격, rms 0)이어도 일반 이음새로 "폴백하지 않는다" — 폴백하면
+    // 키('b')와 오디오(숨 없는 이음새)가 갈라져 캐시 키=오디오 정합이 깨진다(교차검증 codex
+    // CRITICAL 2026-07-20). makeBreathSamples 가 rms 0 이면 무음을 반환하므로 숨 레이아웃을
+    // 유지한 채 들숨만 조용해진다(어차피 발화 전체가 무음인 퇴화 케이스).
+    const stats = breathOn ? speechStats(pieces) : null;
+    const breaths: number[][] | null = stats
+      ? pieces.slice(1).map((_, k) =>
+          makeBreathSamples(sampleRate, breathDurMs(chunks[k + 1]), stats, chunks[k + 1]),
+        )
+      : null;
+    const msSamples = (ms: number): number => Math.round((sampleRate * ms) / 1000);
     const gapBefore = (i: number): number => {
-      const ms = breathOn ? BREATH_CHUNK_PAUSE_MS : INTER_CHUNK_PAUSE_MS - chunkPauseJitterMs(chunks[i]);
-      return Math.round((sampleRate * ms) / 1000);
+      if (breaths) return msSamples(BREATH_PRE_MS) + breaths[i - 1].length + msSamples(BREATH_POST_MS);
+      return msSamples(INTER_CHUNK_PAUSE_MS - chunkPauseJitterMs(chunks[i]));
     };
     let total = 0;
     for (let i = 0; i < pieces.length; i++) total += (i > 0 ? gapBefore(i) : 0) + pieces[i].length;
@@ -714,7 +720,16 @@ export class SherpaTtsEngine implements TtsEngine {
     const out = new Array<number>(total);
     let w = 0;
     for (let i = 0; i < pieces.length; i++) {
-      if (i > 0) for (let g = gapBefore(i); g > 0; g--) out[w++] = 0;
+      if (i > 0) {
+        if (breaths) {
+          for (let g = msSamples(BREATH_PRE_MS); g > 0; g--) out[w++] = 0;
+          const b = breaths[i - 1];
+          for (let j = 0; j < b.length; j++) out[w++] = b[j];
+          for (let g = msSamples(BREATH_POST_MS); g > 0; g--) out[w++] = 0;
+        } else {
+          for (let g = gapBefore(i); g > 0; g--) out[w++] = 0;
+        }
+      }
       const p = pieces[i];
       for (let j = 0; j < p.length; j++) out[w++] = p[j];
     }
