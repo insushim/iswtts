@@ -149,3 +149,21 @@ test('권은 한자어("1권"=일권 — 소설 권수 표기, 사용자 지적 
   expect(normalizeForSpeech('1권을 읽었다.')).toBe('일권을 읽었다.');
   expect(normalizeForSpeech('제3권이 나왔다.')).toBe('제삼권이 나왔다.');
 });
+
+describe('한자 낭독 금지 일반화(v1.25.3 — 사용자 "괄호 안의 한자는 읽지 말자")', () => {
+  const { normalizeForSpeech } = require('../tts/sherpa/normalizeKo');
+  test('대괄호·꺾쇠 등 다른 괄호의 한자 주석도 제거', () => {
+    expect(normalizeForSpeech('[天魔神功]을 얻었다.')).toBe('을 얻었다.');
+    expect(normalizeForSpeech('비급 〈九陰眞經〉이었다.')).toBe('비급 이었다.');
+  });
+  test('한글 혼재 괄호는 한자만 제거(내용 보존)', () => {
+    expect(normalizeForSpeech('무영(武影, 그림자)은 웃었다.')).toBe('무영(그림자)은 웃었다.');
+  });
+  test('괄호 밖 본문 한자도 낭독하지 않는다', () => {
+    expect(normalizeForSpeech('그는 天下를 꿈꿨다.')).toBe('그는 를 꿈꿨다.');
+  });
+  test('한글은 절대 삼키지 않는다(U+F900 정규화 사고 회귀 방지)', () => {
+    const s = '가나다라마바사 아자차카타파하, 힣까지 전부.';
+    expect(normalizeForSpeech(s)).toBe(s);
+  });
+});

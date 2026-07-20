@@ -6,7 +6,7 @@ import { sherpaModelSpeed, sherpaTrimEnabled, sherpaRubato } from '../tts/sherpa
 import { contrastEdgeVoice, genderEdgeVoice } from '../tts/edge/voices';
 import { splitDialogue, type DialogueSegment } from '../lib/dialogue';
 import {
-  guessDialogueGender,
+  guessDialogueGenders,
   SHERPA_FEMALE_SIDS,
   SHERPA_MALE_SIDS,
   type SpeakerGender,
@@ -124,12 +124,19 @@ function speakParams(engineId: string, dialogue = false, gender: SpeakerGender |
     }
     const parsed = Number.parseInt(base.voiceId || '0', 10);
     const baseSid = Number.isInteger(parsed) && parsed >= 0 && parsed <= 9 ? parsed : 0;
-    if (gender) {
-      const pool = gender === 'male' ? SHERPA_MALE_SIDS : SHERPA_FEMALE_SIDS;
-      const pick = pool.find((sid) => sid !== String(baseSid)) ?? pool[0];
-      return { ...base, voiceId: pick };
-    }
-    return { ...base, voiceId: String((baseSid + 1) % 10) };
+    // 성별 미상 폴백도 "반대 성별"로(v1.25.3): 구 +1 대비는 기본 화자가 여성(sid 0)일 때
+    // 폴백도 여성(sid 1)이라, 단서 없는 남성 대사(이름 꼬리표·연속 대화)가 전부 여성으로
+    // 들렸다(사용자 보고 "남녀 구분이 잘 안 된다"). 지문은 기본 화자가 읽으니 대사 미상은
+    // 반대 성별이 대비도 살리고 주연(이성 상대역) 적중률도 높다.
+    const pool = gender
+      ? gender === 'male'
+        ? SHERPA_MALE_SIDS
+        : SHERPA_FEMALE_SIDS
+      : baseSid <= 4
+        ? SHERPA_MALE_SIDS
+        : SHERPA_FEMALE_SIDS;
+    const pick = pool.find((sid) => sid !== String(baseSid)) ?? pool[0];
+    return { ...base, voiceId: pick };
   }
   if (s.dialogueVoiceId) return { ...base, voiceId: s.dialogueVoiceId };
   return { ...base, pitch: Math.min(2, base.pitch * 1.25) };
@@ -153,7 +160,8 @@ let genderCache: (SpeakerGender | null)[] = [];
 function gendersOf(sentences: string[]): (SpeakerGender | null)[] {
   if (genderCacheSrc !== sentences) {
     genderCacheSrc = sentences;
-    genderCache = sentences.map(guessDialogueGender);
+    // 2패스(문서 단위): 대사만 있는 문장은 앞뒤 지문 문장의 단서까지 본다(v1.25.3).
+    genderCache = guessDialogueGenders(sentences);
   }
   return genderCache;
 }

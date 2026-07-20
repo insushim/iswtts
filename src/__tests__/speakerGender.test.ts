@@ -51,3 +51,24 @@ describe('주격 조사 제약(교차검증 codex CONFIRMED)', () => {
     expect(guessDialogueGender('"가자." 사내는 앞장섰다.')).toBe('male');
   });
 });
+
+describe('guessDialogueGenders — 2패스 인접 문장 단서(v1.25.3)', () => {
+  const { guessDialogueGenders } = require('../lib/speakerGender');
+  test('화자 소개(앞 지문) → 이어지는 통짜 대사에 전파', () => {
+    const g = guessDialogueGenders(['사내가 입을 열었다.', '"오랜만이군."']);
+    expect(g[1]).toBe('male');
+  });
+  test('꼬리표 후행(다음 지문) 전파', () => {
+    const g = guessDialogueGenders(['"어서 오렴."', '어머니는 문을 열어 주었다.']);
+    expect(g[0]).toBe('female');
+  });
+  test('연속 대화 구간(양쪽 다 대사)은 확장하지 않는다', () => {
+    const g = guessDialogueGenders(['사내가 물었다.', '"왔나?"', '"네."', '"앉게."']);
+    expect(g[1]).toBe('male'); // 소개 직후 1건만
+    expect(g[2]).toBeNull(); // 교대 화자 넘겨짚기 금지
+  });
+  test('자기 문장 단서가 항상 우선', () => {
+    const g = guessDialogueGenders(['사내가 말했다.', '"그래." 그녀가 답했다.']);
+    expect(g[1]).toBe('female');
+  });
+});

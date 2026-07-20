@@ -40,6 +40,28 @@ export function guessDialogueGender(sentence: string): SpeakerGender | null {
   return null; // 단서 없음 또는 양쪽 다(모호) — 호출부가 중립 대비로 폴백
 }
 
+// 문서 단위 2패스 추정(v1.25.3 — "남녀 구분이 잘 안 된다" 후속). 소설 대사의 다수는
+// 같은 문장에 지문이 없다(대사만 한 문단/이름만 있는 꼬리표) — 1패스가 null 이면:
+//   앞 문장이 대사 없는 순수 지문이고 성별 단서가 있으면 그걸 쓴다("사내가 입을 열었다."
+//   → 다음 줄 대사 = 화자 소개 관행) → 없으면 다음 문장 지문(꼬리표 후행 관행)을 본다.
+// 대화가 이어지는 구간(양쪽 다 대사)은 확장하지 않는다 — 교대 화자를 넘겨짚으면 절반이
+// 오귀속이라 null(폴백)이 낫다.
+export function guessDialogueGenders(sentences: string[]): Array<SpeakerGender | null> {
+  const hasQuote = sentences.map((s) => {
+    QUOTE_SPANS.lastIndex = 0;
+    return QUOTE_SPANS.test(s);
+  });
+  const own = sentences.map(guessDialogueGender);
+  return sentences.map((s, i) => {
+    if (own[i]) return own[i];
+    if (!hasQuote[i]) return null; // 지문 문장 자체는 확장 대상 아님
+    const prev = i > 0 && !hasQuote[i - 1] ? own[i - 1] : null;
+    if (prev) return prev;
+    const next = i + 1 < sentences.length && !hasQuote[i + 1] ? own[i + 1] : null;
+    return next;
+  });
+}
+
 // Supertonic 3 화자(sid 0~9)의 성별 — F0 자기상관 실측(2026-07-20, sid_gender.py):
 // 0~4 = 여(172~253Hz), 5~9 = 남(85~151Hz). Supertone 배포의 voice_styles F1~F5/M1~M5
 // 명명과 일치. 배열 순서 = 대사 음성으로 고를 때의 선호 순(음색 대비가 또렷한 순).
