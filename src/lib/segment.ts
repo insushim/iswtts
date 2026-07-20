@@ -133,21 +133,25 @@ export function segmentDocument(raw: string): SegmentedDoc {
   const paraStarts: number[] = [];
 
   for (const block of blocks) {
-    let blockStarted = false;
-    for (const line of block.split('\n')) {
-      const p = line.trim();
-      if (!p) continue;
-      if (!blockStarted) {
-        paraStarts.push(sentences.length);
-        blockStarted = true;
-      }
-      const parts = splitLineToSentences(p);
-      for (const part of parts) {
-        const s = part.trim();
-        if (!s) continue;
-        for (const chunk of hardWrap(s)) {
-          if (chunk) sentences.push(chunk);
-        }
+    // 문단 안의 줄들은 하나의 흐름으로 이어붙인 뒤 문장을 나눈다(v1.25.2). 고정폭 하드랩
+    // txt(옛 소설 파일)는 문장이 — 심지어 단어가("것입니\n다.") — 줄 중간에서 잘려 있어,
+    // 줄 단위 분할이면 그 조각이 그대로 "문장"이 됐다(사용자 보고: 의미 단위로 나눠야).
+    // 이음은 공백 1칸: 단어 경계 랩은 정확히 복원되고, 단어 중간 랩은 낱말 사이 공백
+    // 1칸이 남지만("것입니 다") 합성 청감에는 사실상 무해 — 문장 단위가 깨지는 것과는
+    // 비교가 안 된다. 시·목록처럼 구두점 없는 줄들은 한 문장으로 합쳐지되 hardWrap(280자)
+    // 이 상한을 지킨다. 문단 경계(빈 줄)는 종전대로 보존 — paraStarts 의미 불변.
+    const flow = block
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .join(' ');
+    if (!flow) continue;
+    paraStarts.push(sentences.length);
+    for (const part of splitLineToSentences(flow)) {
+      const s = part.trim();
+      if (!s) continue;
+      for (const chunk of hardWrap(s)) {
+        if (chunk) sentences.push(chunk);
       }
     }
   }

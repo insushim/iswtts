@@ -123,3 +123,26 @@ test('병리 반복 입력("1. 1. …")에 선형 시간(교차검증 codex — 
   splitLineToSentences(line);
   expect(Date.now() - t0).toBeLessThan(500);
 });
+
+describe('하드랩 재조립(v1.25.2 — 고정폭 txt에서 문장/단어 중간 줄바꿈)', () => {
+  const { segmentDocument, segmentSentences } = require('../lib/segment');
+  test('문단 안 줄들은 이어붙여 의미 단위로 분할(단어 중간 랩 포함)', () => {
+    const raw = '저만의 무예를 만들 것입니\n다. 스승은 고개를 끄덕였다.';
+    expect(segmentSentences(raw)).toEqual([
+      '저만의 무예를 만들 것입니 다.',
+      '스승은 고개를 끄덕였다.',
+    ]);
+  });
+  test('문장이 줄 경계를 넘는 일반 하드랩', () => {
+    const raw = '노인은 낡은 외투 깃을 세우고\n골목 끝의 서점으로 걸음을 옮겼다.\n밤이 깊었다.';
+    expect(segmentSentences(raw)).toEqual([
+      '노인은 낡은 외투 깃을 세우고 골목 끝의 서점으로 걸음을 옮겼다.',
+      '밤이 깊었다.',
+    ]);
+  });
+  test('문단(빈 줄) 경계와 paraStarts는 보존', () => {
+    const { sentences, paraStarts } = segmentDocument('첫 문단 첫 문장.\n이어진 둘째 문장.\n\n둘째 문단이다.');
+    expect(sentences).toEqual(['첫 문단 첫 문장.', '이어진 둘째 문장.', '둘째 문단이다.']);
+    expect(paraStarts).toEqual([0, 2]);
+  });
+});

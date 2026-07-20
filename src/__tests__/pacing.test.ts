@@ -89,11 +89,11 @@ describe('segmentDocument(문단 시작 인덱스)', () => {
     expect(sentences).toEqual(['하나.', '둘.', '셋.']);
   });
 
-  test('단일 개행(하드랩)은 문단이 아니다 — 빈 줄만 문단 경계', () => {
+  test('단일 개행(하드랩)은 문단이 아니라 이어붙인다(v1.25.2 스펙 — 빈 줄만 문단 경계)', () => {
     const raw = '한 문장이 줄에\n걸쳐 접혀 있다.\n\n다음 문단이다.';
     const { sentences, paraStarts } = segmentDocument(raw);
-    expect(sentences).toEqual(['한 문장이 줄에', '걸쳐 접혀 있다.', '다음 문단이다.']);
-    expect(paraStarts).toEqual([0, 2]);
+    expect(sentences).toEqual(['한 문장이 줄에 걸쳐 접혀 있다.', '다음 문단이다.']);
+    expect(paraStarts).toEqual([0, 1]);
   });
 
   test('빈 입력', () => {

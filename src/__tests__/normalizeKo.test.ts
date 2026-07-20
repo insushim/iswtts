@@ -143,3 +143,9 @@ test('일 표기 중복·0일 방지(교차검증 codex CONFIRMED)', () => {
   expect(normalizeForSpeech('2026. 12. 31일에 만나자.')).toBe('이천이십육년 십이월 삼십일일에 만나자.');
   expect(normalizeForSpeech('2026. 12. 0.')).not.toContain('년');
 });
+
+test('권은 한자어("1권"=일권 — 소설 권수 표기, 사용자 지적 v1.25.2)', () => {
+  const { normalizeForSpeech } = require('../tts/sherpa/normalizeKo');
+  expect(normalizeForSpeech('1권을 읽었다.')).toBe('일권을 읽었다.');
+  expect(normalizeForSpeech('제3권이 나왔다.')).toBe('제삼권이 나왔다.');
+});
