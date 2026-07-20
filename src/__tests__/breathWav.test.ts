@@ -107,17 +107,17 @@ describe('makeBreathSamples — 합성 들숨', () => {
 describe('makeGapBreath — 문단 들숨 길이 적응(절단 딱 소리 방지, Gemini 교차검증 지적)', () => {
   const GSR = 22050;
 
-  test('넉넉한 쉼은 최대 길이(260ms) 들숨', () => {
+  test('넉넉한 쉼은 최대 길이(170ms) 들숨', () => {
     const gb = makeGapBreath(400, GSR);
     expect(gb).not.toBeNull();
-    expect(gb!.samples.length).toBe(Math.round((GSR * 260) / 1000));
+    expect(gb!.samples.length).toBe(Math.round((GSR * 170) / 1000));
   });
 
   test('빠듯한 쉼은 들숨을 줄여서라도 통째로 넣는다(릴리즈 절단 금지)', () => {
-    const gb = makeGapBreath(300, GSR)!;
-    // lead 30 + tail 30 을 뺀 몫 = 240ms — 쉼 안에 온전히 들어간다.
-    expect(gb.samples.length).toBe(Math.round((GSR * 240) / 1000));
-    expect(gb.leadMs + 240 + 30).toBeLessThanOrEqual(300);
+    const gb = makeGapBreath(200, GSR)!;
+    // lead 30 + tail 30 을 뺀 몫 = 140ms — 쉼 안에 온전히 들어간다.
+    expect(gb.samples.length).toBe(Math.round((GSR * 140) / 1000));
+    expect(gb.leadMs + 140 + 30).toBeLessThanOrEqual(200);
     // 릴리즈 보존: 끝 5ms RMS 가 중반부보다 확실히 작다(잘렸다면 중반 수준).
     const n = gb.samples.length;
     const rmsOf = (a: number[]) => Math.sqrt(a.reduce((s, v) => s + v * v, 0) / a.length);
@@ -126,7 +126,7 @@ describe('makeGapBreath — 문단 들숨 길이 적응(절단 딱 소리 방지
     expect(tail).toBeLessThan(mid * 0.3);
   });
 
-  test('최소 길이(180ms)도 안 들어가면 null(무음 쉼 유지)', () => {
+  test('최소 길이(110ms)도 안 들어가면 null(무음 쉼 유지)', () => {
     expect(makeGapBreath(GAP_BREATH_MIN_TOTAL_MS - 1, GSR)).toBeNull();
     expect(makeGapBreath(GAP_BREATH_MIN_TOTAL_MS, GSR)).not.toBeNull();
     expect(makeGapBreath(100, GSR)).toBeNull();
@@ -149,11 +149,11 @@ describe('speechStats — 발화 레벨 실측(들숨 스케일 기준)', () => 
 });
 
 describe('breathDurMs — 들숨 길이 결정론 변주', () => {
-  test('180~260ms 범위(v1.26.1 단축), 같은 텍스트 = 같은 길이', () => {
+  test('130~170ms 범위(v1.26.2 — 청취 선택), 같은 텍스트 = 같은 길이', () => {
     for (const s of ['가나다', '문을 열자', 'x', '']) {
       const d = breathDurMs(s);
-      expect(d).toBeGreaterThanOrEqual(180);
-      expect(d).toBeLessThanOrEqual(260);
+      expect(d).toBeGreaterThanOrEqual(130);
+      expect(d).toBeLessThanOrEqual(170);
       expect(breathDurMs(s)).toBe(d);
     }
   });
