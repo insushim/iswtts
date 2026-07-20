@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { TtsEngine } from '../tts/TtsEngine';
 import { getEngine, systemEngine } from '../tts';
 import { sherpaStats, resetSherpaStats } from '../tts/sherpa/stats';
-import { sherpaModelSpeed, sherpaTrimEnabled } from '../tts/sherpa/rate';
+import { sherpaModelSpeed, sherpaTrimEnabled, sherpaRubato } from '../tts/sherpa/rate';
 import { contrastEdgeVoice } from '../tts/edge/voices';
 import { splitDialogue, type DialogueSegment } from '../lib/dialogue';
 import { useSettings } from './settings';
@@ -94,6 +94,7 @@ function speakParams(engineId: string, dialogue = false) {
     pitch: s.pitch,
     language: s.language,
     breath: engineId === 'sherpa' && s.breathSound,
+    rubato: engineId === 'sherpa' && s.rubato,
     voiceId:
       engineId === 'edge' ? s.edgeVoiceId
       : engineId === 'sherpa' ? s.sherpaVoiceId
@@ -242,11 +243,17 @@ export const usePlayer = create<PlayerState>((set, get) => {
         // 낭독 페이스 자연화(pacing.ts): 자동진행에만 문맥 비례 쉼을 얹는다 — 문단 전환·
         // 말줄임·대화문 beat·긴 문장 회복 + 미세 변주. 고품질 오프라인(sherpa) 낭독 전용
         // (다른 엔진은 자체 발화 텀이 이미 김). 수동 넘김(next/prev/seek)은 즉시 반응 유지.
+        const cfg = useSettings.getState();
         const gap =
           !fellBack && engineId === 'sherpa'
             ? sentenceGapMs(st.sentences[st.index], st.sentences[nextIndex], {
                 paragraphBreak: st.paraStarts.has(nextIndex),
-                rate: useSettings.getState().rate,
+                rate: cfg.rate,
+                // 완급 변주로 느긋하게 읽은 문장 뒤엔 숨 고르기 한 번 추가(pacing.ts
+                // RUBATO_REST). 판정은 방금 끝난 문장 전체를 엔진과 같은 순수 함수
+                // (sherpaRubato)에 넣어 계산 — 대사 분할 문장은 엔진이 세그먼트 단위로
+                // 해시해 판정이 어긋날 수 있으나 영향은 쉼 ±60ms 뿐(감속 자체와 무관).
+                afterRubato: cfg.rubato && sherpaRubato(st.sentences[st.index]) !== 1,
               })
             : 0;
         if (gap < GAP_MIN_MS) {

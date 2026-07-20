@@ -44,6 +44,31 @@ export function sherpaTempoComp(text: string): number {
   return TEMPO_MIN_COMP + (1 - TEMPO_MIN_COMP) * t;
 }
 
+// 루바토(문장 완급 변주, v1.25.0). 사용자 발견에서 출발: 1.5× 낭독 중 모델이 장문을
+// 고유하게 천천히 읽는 순간이 "오히려 사람 같다" — 그 완급을 의도된 변주로 정식화한다.
+// 문장의 ~30%만(가끔이어야 사람같다) 결정론 해시로 골라 모델 speed 를 0.90~0.96 으로
+// 낮춘다(실측 2026-07-20: 발화속도 −3~−7%, Whisper CER 열화 없음 — rubato_probe.py).
+// ⚠️ tempoComp 와 동일 불변식: 합성 speed 에만 곱하고 재생 보상식(sherpaPlaybackRate ·
+// setRate 라이브 경로의 currentModelSpeed)에는 절대 넣지 않는다 — 넣으면 스트레치가
+// 감속을 도로 상쇄한다. 원문 텍스트의 순수 함수라 같은 문장은 항상 같은 완급(재생마다
+// 달라지면 "고장"으로 들린다) — 캐시 키와도 자동 정합.
+// "너무 느려지지만 않으면"(사용자 조건) → 하한 0.90, tempoComp 와 곱 하한은 엔진에서
+// SPEED_COMP_FLOOR 로 클램프.
+const RUBATO_PORTION = 0.3;
+const RUBATO_MIN = 0.9;
+const RUBATO_MAX = 0.96;
+// tempoComp × rubato 곱의 하한 — 실측 검증 구간(0.88 단독 −11%) 근방까지만 허용.
+export const SPEED_COMP_FLOOR = 0.85;
+export function sherpaRubato(text: string): number {
+  // djb2 — pacing.ts 지터와 같은 계열(결정론 변주의 공용 도구).
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  const u = (h >>> 0) % 1000; // 선택 주사위(하위 비트)
+  if (u >= RUBATO_PORTION * 1000) return 1;
+  const v = (h >>> 10) % 1000; // 감속 정도 주사위(선택과 다른 비트 대역)
+  return RUBATO_MIN + ((RUBATO_MAX - RUBATO_MIN) * v) / 1000;
+}
+
 // 스마트 스피드(무음 압축) 적용 여부 — 스트레치 온전 구간(≤3×)의 확정된 소리는 건드리지
 // 않고, 스트레치가 한계(3.0)에 붙는 초고배속에서만 쉼을 압축해 부담을 덜어낸다.
 export function sherpaTrimEnabled(rate?: number): boolean {

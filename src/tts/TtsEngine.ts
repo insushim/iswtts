@@ -14,6 +14,7 @@ export type SpeakParams = {
   voiceId?: string;  // 엔진별 음성 식별자
   language?: string; // BCP-47 (예: ko-KR)
   breath?: boolean;  // 긴 문장 앞 숨소리(설정 breathSound — sherpa 만 구현, 나머지 무시)
+  rubato?: boolean;  // 문장 완급 변주(설정 rubato — sherpa 만 구현, 나머지 무시)
 };
 
 export type EngineVoice = {

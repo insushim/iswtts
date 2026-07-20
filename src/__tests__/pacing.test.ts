@@ -100,3 +100,19 @@ describe('segmentDocument(문단 시작 인덱스)', () => {
     expect(segmentDocument('')).toEqual({ sentences: [], paraStarts: [] });
   });
 });
+
+describe('afterRubato 숨 고르기(v1.25.0)', () => {
+  const { sentenceGapMs } = require('../lib/pacing');
+  const P = '그는 조용히 고개를 끄덕였다.';
+  const N = '바람이 몹시 차가운 밤이었다.';
+  test('완급 변주 문장 뒤엔 +60ms(지터·클램프·배속 규칙은 동일 적용)', () => {
+    // paragraphBreak 로 기저를 0 클램프 위로 띄운다(음수 지터가 기저만 0 에 눌러붙으면
+    // 차이가 60 미만으로 보이는 착시 — 규칙 자체는 +60 고정 가산).
+    const base = sentenceGapMs(P, N, { paragraphBreak: true, rate: 1 });
+    const rest = sentenceGapMs(P, N, { paragraphBreak: true, rate: 1, afterRubato: true });
+    expect(rest - base).toBe(60);
+  });
+  test('>3×에선 여전히 0', () => {
+    expect(sentenceGapMs(P, N, { paragraphBreak: false, rate: 3.5, afterRubato: true })).toBe(0);
+  });
+});

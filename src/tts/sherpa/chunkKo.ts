@@ -119,3 +119,16 @@ export function chunkForSynthesis(text: string): string[] {
   }
   return chunks.length > 1 ? chunks : [text];
 }
+
+// 절 이음새 쉼 지터(v1.25.0, 교차검증 제안 채택). 문장 "간" 쉼(pacing.ts)엔 문맥 지터가
+// 있는데 장문 내부의 절 경계 쉼만 240ms 고정이라 쉼표마다 기계적으로 똑같이 쉬었다 —
+// 다음 절 텍스트의 djb2 해시로 0~45ms 를 결정론 감산해 195~240ms 로 변주한다.
+// 하향 전용인 이유: 총 이음새 쉼(꼬리 80 + 삽입 + 머리 40)이 문장 간 쉼(360ms)을 넘지
+// 않아야 한다는 엔진 캡(INTER_CHUNK_PAUSE_MS 주석)을 위로는 못 넘기 때문. 텍스트의 순수
+// 함수라 같은 문장은 항상 같은 리듬(캐시 키=오디오 정합 자동 유지).
+const CHUNK_JITTER_MAX_MS = 45;
+export function chunkPauseJitterMs(chunkText: string): number {
+  let h = 5381;
+  for (let i = 0; i < chunkText.length; i++) h = ((h * 33) ^ chunkText.charCodeAt(i)) >>> 0;
+  return h % (CHUNK_JITTER_MAX_MS + 1);
+}

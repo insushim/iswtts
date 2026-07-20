@@ -49,3 +49,21 @@ test('전각 쉼표·세미콜론도 경계로 인정', () => {
   expect(chunks.length).toBeGreaterThan(1);
   expect(chunks.join('')).toBe(s);
 });
+
+describe('chunkPauseJitterMs — 절 이음새 쉼 지터(v1.25.0)', () => {
+  const { chunkPauseJitterMs } = require('../tts/sherpa/chunkKo');
+  test('결정적·범위 0~45ms(하향 전용 — 엔진 360ms 캡을 위로 못 넘게)', () => {
+    for (let i = 0; i < 200; i++) {
+      const j = chunkPauseJitterMs(`서로 다른 절 텍스트 ${i} 입니다`);
+      expect(j).toBeGreaterThanOrEqual(0);
+      expect(j).toBeLessThanOrEqual(45);
+    }
+    const s = '골목 끝의 작은 서점으로 걸음을 옮기며, ';
+    expect(chunkPauseJitterMs(s)).toBe(chunkPauseJitterMs(s));
+  });
+  test('실제로 변주가 생긴다(전부 같은 값이면 지터가 아님)', () => {
+    const vals = new Set<number>();
+    for (let i = 0; i < 60; i++) vals.add(chunkPauseJitterMs(`절 ${i} 지터 분포 확인`));
+    expect(vals.size).toBeGreaterThan(5);
+  });
+});

@@ -4,11 +4,18 @@ import { createTTS, saveAudioToFile } from 'react-native-sherpa-onnx/tts';
 import type { TtsEngine as NativeTts } from 'react-native-sherpa-onnx/tts';
 import type { TtsEngine, SpeakParams, SpeakHandlers, EngineVoice } from '../TtsEngine';
 import { sherpaModelPath } from '../../lib/sherpaModel';
-import { sherpaModelSpeed, sherpaPlaybackRate, sherpaTrimEnabled, sherpaTempoComp } from './rate';
+import {
+  sherpaModelSpeed,
+  sherpaPlaybackRate,
+  sherpaTrimEnabled,
+  sherpaTempoComp,
+  sherpaRubato,
+  SPEED_COMP_FLOOR,
+} from './rate';
 import { disposePlayer } from '../disposePlayer';
 import { compressSilence, trimEdgeSilence, LEAD_PAD_MS, TRAIL_PAD_MS, EDGE_FADE_MS } from './smartSpeed';
 import { normalizeForSpeech } from './normalizeKo';
-import { chunkForSynthesis, injectBreathInline, hasClauseComma } from './chunkKo';
+import { chunkForSynthesis, injectBreathInline, hasClauseComma, chunkPauseJitterMs } from './chunkKo';
 import { estimateWordBoundaries, type WordBoundary } from './align';
 import { recordSynth, recordStarvation, recordPlaybackProgress } from './stats';
 import { subtitlesVisible, onVisibilityChange } from '../../lib/visibility';
@@ -304,9 +311,9 @@ export class SherpaTtsEngine implements TtsEngine {
   // 그 구간 안에서는 스트레치만 바꿔 끼우면 된다 — 재합성·끊김 0. 합성 파라미터가 달라지는
   // 경계(1× 이하·3× 초과)를 넘나들면 false — 호출부가 재발화로 폴백.
   // ⚠️ 불변식(setRateApprox 공통): currentModelSpeed 는 "순수" sherpaModelSpeed(rate)여야
-  // 한다 — 템포 평준화(sherpaTempoComp)는 여기 절대 포함 금지. 그래야 아래 나눗셈에서 comp
-  // 가 상쇄돼 라이브 배속 변경 후에도 문장의 net 템포(comp × rate 비례)가 유지된다
-  // (rate.ts 경고의 소비처 측 짝 — 교차검증 지적 2026-07-19).
+  // 한다 — 템포 평준화(sherpaTempoComp)·루바토(sherpaRubato)는 여기 절대 포함 금지. 그래야
+  // 아래 나눗셈에서 두 보정이 상쇄돼 라이브 배속 변경 후에도 문장의 net 템포(보정 × rate
+  // 비례)가 유지된다(rate.ts 경고의 소비처 측 짝 — 교차검증 지적 2026-07-19).
   setRate(rate: number): boolean {
     if (!this.player || this.currentModelSpeed === null) return false;
     if (this.currentModelSpeed !== sherpaModelSpeed(rate)) return false;
@@ -445,11 +452,23 @@ export class SherpaTtsEngine implements TtsEngine {
     return chunks.length > 1 || injectBreathInline(chunks[0]) !== chunks[0];
   }
 
+  // 루바토(문장 완급 변주) — 이 발화의 모델 speed 에 곱할 감속 인자. 원문 텍스트의 순수
+  // 함수(rate.ts sherpaRubato)라 keyOf 와 합성이 자동 일치한다. 해시 입력을 spoken(정규화
+  // 후)이 아닌 원문으로 두는 이유: 감속 정도는 어차피 주사위라 어느 쪽이든 무방하고, 원문
+  // 기준이면 keyOf 가 정규화를 추가로 돌 필요가 없다(tempoComp 는 "음절 수"라는 물리량이라
+  // spoken 필수 — 성격이 다르다). >3×(스마트 스피드)는 훑어 듣는 속도라 변주 무의미 — 제외.
+  private rubatoFactor(text: string, params: SpeakParams): number {
+    if (!params.rubato || sherpaTrimEnabled(params.rate)) return 1;
+    return sherpaRubato(text);
+  }
+
   private keyOf(text: string, params: SpeakParams): string {
     const sid = params.voiceId || '0';
     // breath 는 숨소리가 파일에 구워지므로 "실효" 여부만 키에 포함(토글 시 재합성 유도).
+    // rubato 도 동일 — 감속이 파일에 구워지므로 실효(≠1) 여부를 키에 넣어 토글 시 재합성.
     const breath = this.breathEffective(text, params) ? 'b' : '';
-    return `${sid}\u0000${sherpaModelSpeed(params.rate)}\u0000${langOf(params.language)}\u0000${breath}\u0000${text}`;
+    const rub = this.rubatoFactor(text, params) !== 1 ? 'r' : '';
+    return `${sid}\u0000${sherpaModelSpeed(params.rate)}\u0000${langOf(params.language)}\u0000${breath}${rub}\u0000${text}`;
   }
 
   private makeSynth(text: string, params: SpeakParams): CacheEntry {
@@ -580,7 +599,12 @@ export class SherpaTtsEngine implements TtsEngine {
         // 재생 보상식(playFile 의 sherpaPlaybackRate)에는 반영하지 않아 순수 템포만 변한다.
         // 음절 산정은 정규화 "후"(spoken) 기준 — 숫자·기호가 많은 원문은 실제 발화가 훨씬
         // 길어서 원문 기준이면 짧은 문장으로 오판된다(교차검증 지적 2026-07-19).
-        speed: sherpaModelSpeed(params.rate) * sherpaTempoComp(spoken),
+        // + 루바토(v1.25.0): 문장 ~30%를 결정론으로 골라 0.90~0.96 감속(완급 변주 —
+        //   rubatoFactor 주석). 두 보정의 곱은 SPEED_COMP_FLOOR 로 클램프(실측 검증 구간 밖
+        //   과감속 방지). 둘 다 합성 speed 전용 — 재생 보상식 포함 금지(불변식 rate.ts).
+        speed:
+          sherpaModelSpeed(params.rate) *
+          Math.max(SPEED_COMP_FLOOR, sherpaTempoComp(spoken) * this.rubatoFactor(text, params)),
         extra: { lang },
         // 자막 결과는 버린다(sentence 단위 = 최소 비용) — fast 모드는 앞뒤 무음·쉼을 발화로
         // 깔고 계산한 글자수 비례 추정이라 하이라이트가 수백 ms 어긋났다(Whisper 대조 실측
@@ -673,17 +697,22 @@ export class SherpaTtsEngine implements TtsEngine {
       const trail = i === chunks.length - 1 ? TRAIL_PAD_MS : CHUNK_TRAIL_PAD_MS;
       pieces.push(trimEdgeSilence(audio.samples, sampleRate, LEAD_PAD_MS, trail, EDGE_FADE_MS));
     }
-    // 이음새 쉼: 기본 INTER_CHUNK_PAUSE_MS. 숨 모드면 모든 이음새 머리에 들숨이 심겨 있어
-    // (doSynthesize) 들숨이 쉼 역할을 대신 — 전부 BREATH_CHUNK_PAUSE_MS 로 축소.
-    const gapBefore = (): number =>
-      Math.round((sampleRate * (breathOn ? BREATH_CHUNK_PAUSE_MS : INTER_CHUNK_PAUSE_MS)) / 1000);
+    // 이음새 쉼: 기본 INTER_CHUNK_PAUSE_MS − 결정론 지터(195~240ms — chunkPauseJitterMs
+    // 주석, v1.25.0). 숨 모드면 모든 이음새 머리에 들숨이 심겨 있어(doSynthesize) 들숨이
+    // 쉼 역할을 대신 — 전부 BREATH_CHUNK_PAUSE_MS 고정(들숨 길이 자체가 자연 변주).
+    // 지터 해시 입력은 "그 이음새 뒤 절"(chunks[i]) — 숨 태그가 붙기 전·후 무관하게 숨
+    // 모드에선 지터 미사용이라 태그 유무가 결과에 영향 없다.
+    const gapBefore = (i: number): number => {
+      const ms = breathOn ? BREATH_CHUNK_PAUSE_MS : INTER_CHUNK_PAUSE_MS - chunkPauseJitterMs(chunks[i]);
+      return Math.round((sampleRate * ms) / 1000);
+    };
     let total = 0;
-    for (let i = 0; i < pieces.length; i++) total += (i > 0 ? gapBefore() : 0) + pieces[i].length;
+    for (let i = 0; i < pieces.length; i++) total += (i > 0 ? gapBefore(i) : 0) + pieces[i].length;
     // 사전 할당 + 인덱스 복사(스프레드/push 금지 — 문장 하나가 수십만 샘플, smartSpeed 와 동일 이유).
     const out = new Array<number>(total);
     let w = 0;
     for (let i = 0; i < pieces.length; i++) {
-      if (i > 0) for (let g = gapBefore(); g > 0; g--) out[w++] = 0;
+      if (i > 0) for (let g = gapBefore(i); g > 0; g--) out[w++] = 0;
       const p = pieces[i];
       for (let j = 0; j < p.length; j++) out[w++] = p[j];
     }

@@ -654,6 +654,23 @@ export default function SettingsScreen() {
           </Text>
         </TouchableOpacity>
       )}
+      {isSherpa && (
+        <TouchableOpacity
+          onPress={() => s.set({ rubato: !s.rubato })}
+          style={{ paddingVertical: 8 }}
+          accessibilityRole="switch"
+          accessibilityLabel="낭독 완급 변주"
+          accessibilityState={{ checked: s.rubato }}
+        >
+          <Text style={{ color: p.text, fontWeight: '600', fontSize: 15 }}>
+            {s.rubato ? '☑' : '☐'} 낭독 완급 변주
+          </Text>
+          <Text style={{ color: p.subtext, fontSize: 12, lineHeight: 18, marginTop: 4 }}>
+            사람 낭독자처럼 일부 문장을 살짝 느긋하게 읽어 완급을 만듭니다. (고품질
+            오프라인 음성 전용, 3배속 이하에서만)
+          </Text>
+        </TouchableOpacity>
+      )}
 
       <Text style={[styles.section, { color: p.subtext }]}>배경음</Text>
       <TouchableOpacity

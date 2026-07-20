@@ -22,6 +22,7 @@ export type SettingsState = {
   fontScale: number;    // 자막 글자 배율 (0.8 .. 1.8)
   bgSound: boolean;     // 낭독 뒤 432Hz 배경 앰비언트 재생 여부(기본 꺼짐)
   breathSound: boolean; // 긴 문장 앞 숨소리(오프라인 고품질 음성 전용, 기본 꺼짐)
+  rubato: boolean;      // 낭독 완급 변주(오프라인 고품질 음성 전용, 기본 켜짐 — rate.ts sherpaRubato)
   bgVolume: number;     // 배경음 볼륨 (0 .. 0.6) — 낭독을 가리지 않게 낮게
   set: (patch: Partial<SettingsState>) => void;
 };
@@ -45,6 +46,7 @@ export const useSettings = create<SettingsState>()(
       fontScale: 1.0,
       bgSound: false,
       breathSound: false,
+      rubato: true,
       bgVolume: 0.2,
       // 스토어 레벨 방어 클램프 — 어떤 호출부에서도 범위를 벗어난 값이 엔진까지 흐르지 않게.
       set: (patch) => {
@@ -74,6 +76,7 @@ export const useSettings = create<SettingsState>()(
         fontScale: s.fontScale,
         bgSound: s.bgSound,
         breathSound: s.breathSound,
+        rubato: s.rubato,
         bgVolume: s.bgVolume,
       }),
     },

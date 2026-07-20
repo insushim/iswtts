@@ -25,6 +25,10 @@ const LONG_SENT_MS = 150;
 const MID_SENT_MS = 80;
 /** 문장별 미세 변주 폭(±ms) — 결정적(텍스트 해시)이라 같은 문장 쌍은 항상 같은 쉼. */
 const JITTER_MS = 50;
+/** 루바토(완급 변주)로 느긋하게 읽은 문장 뒤: 사람은 느리게 읽은 직후 숨을 한 번 더
+ *  고른다 — 완급(rate.ts sherpaRubato)과 쉼을 하나의 낭독 리듬으로 잇는다(v1.25.0,
+ *  교차검증 제안 채택). 발동 여부는 호출부(player.ts)가 이전 문장으로 판정해 전달. */
+const RUBATO_REST_MS = 60;
 
 // 문장 꼬리의 닫는 인용부호·괄호(구두점 판정 시 벗겨낸다).
 const TRAIL_QUOTES = /["'”’」』)\]）】]+$/;
@@ -47,13 +51,14 @@ function hash(s: string): number {
 export function sentenceGapMs(
   prev: string,
   next: string,
-  opts: { paragraphBreak: boolean; rate: number },
+  opts: { paragraphBreak: boolean; rate: number; afterRubato?: boolean },
 ): number {
   const rate = opts.rate > 0 ? opts.rate : 1;
   if (rate > 3) return 0;
 
   let ms = 0;
   if (opts.paragraphBreak) ms += PARAGRAPH_MS;
+  if (opts.afterRubato) ms += RUBATO_REST_MS;
 
   const tail = prev.trim().replace(TRAIL_QUOTES, '');
   if (ELLIPSIS_END.test(tail)) ms += ELLIPSIS_MS;

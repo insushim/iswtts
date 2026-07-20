@@ -75,3 +75,39 @@ describe('sherpaTempoComp — 짧은 문장 템포 평준화(v1.24.0)', () => {
     expect(sherpaTempoComp(s)).toBe(sherpaTempoComp(s));
   });
 });
+
+describe('sherpaRubato — 문장 완급 변주(v1.25.0)', () => {
+  const { sherpaRubato, SPEED_COMP_FLOOR } = require('../tts/sherpa/rate');
+  test('결정적: 같은 문장은 항상 같은 인자(재생마다 달라지면 고장으로 들린다)', () => {
+    const s = '노인은 낡은 외투 깃을 세우고 골목 끝의 서점으로 걸음을 옮겼다.';
+    expect(sherpaRubato(s)).toBe(sherpaRubato(s));
+  });
+  test('값 범위: 1(변주 없음) 또는 [0.90, 0.96](너무 느려지지 않게)', () => {
+    for (let i = 0; i < 300; i++) {
+      const f = sherpaRubato(`테스트 문장 번호 ${i} 입니다. 서로 다른 해시를 위해.`);
+      if (f !== 1) {
+        expect(f).toBeGreaterThanOrEqual(0.9);
+        expect(f).toBeLessThanOrEqual(0.96);
+      }
+    }
+  });
+  test('발동 비율 ≈ 30% ("가끔"이어야 사람같다 — 통계 허용 오차 ±12%p)', () => {
+    let slowed = 0;
+    const N = 400;
+    for (let i = 0; i < N; i++) {
+      if (sherpaRubato(`통계 검사용 문장 ${i} — 완급 변주 비율을 잰다.`) !== 1) slowed++;
+    }
+    expect(slowed / N).toBeGreaterThan(0.18);
+    expect(slowed / N).toBeLessThan(0.42);
+  });
+  test('tempoComp 와의 곱 하한(SPEED_COMP_FLOOR)은 실측 검증 구간 안', () => {
+    expect(SPEED_COMP_FLOOR).toBeGreaterThanOrEqual(0.85);
+    expect(SPEED_COMP_FLOOR).toBeLessThan(0.9);
+  });
+  test('빈 문자열·기호만인 입력도 안전(범위 밖 값 없음)', () => {
+    for (const s of ['', '…', '!!!', '12,500']) {
+      const f = sherpaRubato(s);
+      expect(f === 1 || (f >= 0.9 && f <= 0.96)).toBe(true);
+    }
+  });
+});
