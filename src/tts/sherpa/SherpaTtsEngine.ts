@@ -13,7 +13,14 @@ import {
   sherpaPaceComp,
 } from './rate';
 import { disposePlayer } from '../disposePlayer';
-import { compressSilence, trimEdgeSilence, LEAD_PAD_MS, TRAIL_PAD_MS, EDGE_FADE_MS } from './smartSpeed';
+import {
+  compressSilence,
+  trimEdgeSilence,
+  LEAD_PAD_MS,
+  leadPadMsFor,
+  TRAIL_PAD_MS,
+  EDGE_FADE_MS,
+} from './smartSpeed';
 import { normalizeForSpeech } from './normalizeKo';
 import { chunkForSynthesis, hasClauseComma, chunkPauseJitterMs } from './chunkKo';
 import { makeBreathSamples, speechStats, breathDurMs } from './breathWav';
@@ -675,7 +682,8 @@ export class SherpaTtsEngine implements TtsEngine {
       samples = c.samples;
       trimFactor = c.factor;
     } else {
-      samples = trimEdgeSilence(rawSamples, sampleRate, undefined, undefined, EDGE_FADE_MS);
+      // 짧은 문장은 머리 여유를 키운다(leadPadMsFor — "짧은 말 씹힘" 대책, smartSpeed.ts).
+      samples = trimEdgeSilence(rawSamples, sampleRate, leadPadMsFor(spoken), undefined, EDGE_FADE_MS);
     }
     // 단어 하이라이트: 최종(트림 후) 샘플에서 발화 구간 위에만 글자수 비례 분배 — 쉼 동안
     // 하이라이트가 전진하지 않고, 무음 오프셋 오차가 원천 제거된다.

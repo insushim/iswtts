@@ -73,3 +73,22 @@ describe('smartSpeed 무음 압축(순수 신호처리)', () => {
     expect(c.factor).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('짧은 문장 머리 여유(v1.27.0)', () => {
+  const { leadPadMsFor, LEAD_PAD_MS, SHORT_LEAD_PAD_MS, SHORT_SENTENCE_CHARS } = require('../tts/sherpa/smartSpeed');
+  test('짧은 감탄·단답만 넉넉한 패드', () => {
+    expect(leadPadMsFor('똑똑!')).toBe(SHORT_LEAD_PAD_MS);
+    expect(leadPadMsFor('응.')).toBe(SHORT_LEAD_PAD_MS);
+    expect(leadPadMsFor('그는 조용히 걸었다.')).toBe(LEAD_PAD_MS);
+  });
+  test('경계값 고정: 8자까지 짧은 문장, 9자부터 일반', () => {
+    expect(leadPadMsFor('가'.repeat(SHORT_SENTENCE_CHARS))).toBe(SHORT_LEAD_PAD_MS);
+    expect(leadPadMsFor('가'.repeat(SHORT_SENTENCE_CHARS + 1))).toBe(LEAD_PAD_MS);
+  });
+  test('앞뒤 공백은 판정에서 무시', () => {
+    expect(leadPadMsFor('  똑똑!  ')).toBe(SHORT_LEAD_PAD_MS);
+  });
+  test('패드가 align 의 쉼 최소길이(120ms)보다 길다 = 하이라이트가 쉼으로 분류', () => {
+    expect(SHORT_LEAD_PAD_MS).toBeGreaterThan(120);
+  });
+});

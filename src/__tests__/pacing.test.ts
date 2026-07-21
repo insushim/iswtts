@@ -129,3 +129,17 @@ describe('endsWithEllipsis — 여운 문장 판정(쉼·완급 공용, v1.26.0)
     expect(endsWithEllipsis('그는… 결국 문을 열었다.')).toBe(false);
   });
 });
+
+describe('말줄임 여운 — 마침표 2개도 인정(v1.27.0)', () => {
+  const { endsWithEllipsis, sentenceGapMs } = require('../lib/pacing');
+  test('".."로 끝나는 문장도 말줄임(합성 정규화가 …로 접는 것과 정합)', () => {
+    expect(endsWithEllipsis('그랬다..')).toBe(true);
+    expect(endsWithEllipsis('그랬다...')).toBe(true);
+    expect(endsWithEllipsis('그랬다.')).toBe(false);
+  });
+  test('여운 쉼이 실제로 더 길어진다', () => {
+    const a = sentenceGapMs('그랬다..', '다음.', { paragraphBreak: false, rate: 1 });
+    const b = sentenceGapMs('그랬다.', '다음.', { paragraphBreak: false, rate: 1 });
+    expect(a).toBeGreaterThan(b);
+  });
+});

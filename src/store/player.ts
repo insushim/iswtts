@@ -161,7 +161,9 @@ function gendersOf(sentences: string[]): (SpeakerGender | null)[] {
   if (genderCacheSrc !== sentences) {
     genderCacheSrc = sentences;
     // 2패스(문서 단위): 대사만 있는 문장은 앞뒤 지문 문장의 단서까지 본다(v1.25.3).
-    genderCache = guessDialogueGenders(sentences);
+    // paraStarts 는 이 문장 배열과 항상 짝(load 에서 함께 세팅) — 문단 경계를 넘는 성별
+    // 전파를 막는 데 쓴다. 스토어 초기화 이후에만 불리므로 getState() 안전.
+    genderCache = guessDialogueGenders(sentences, usePlayer.getState().paraStarts);
   }
   return genderCache;
 }
@@ -425,7 +427,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
   // 여유 버퍼를 갖고 출발해 초반(버퍼가 아직 안 쌓인 구간)의 발화 대기 편차 = 리듬 흔들림이
   // 사라진다. 시스템 TTS 는 즉시 발화라 불필요, Edge(온라인)는 재생 의사 없이 연결을 여는
   // 낭비라 제외. 모델 미설치면 prefetch 가 조용히 실패(캐시에서 제거)할 뿐 부작용 없다.
-  const WARMUP_UNITS = 8;
+  // v1.27.0: 8 → 14. 사용자 보고 2026-07-21 "더 많이·더 앞에서부터 음성화하면, 2배속에서
+  // 아직 남아 있는 시작 부분의 느려짐이 줄 것 같다". 2×는 합성 예산(RTF<0.5)이 빠듯해
+  // 워밍업 8문장으로는 재생이 초반에 버퍼를 따라잡는다 — 엔진 파일 캐시 상한(MAX_CACHE 24)과
+  // 재생 중 선행합성(prefetchUnits 20) 안쪽이라 서로 밀어내지 않는다.
+  const WARMUP_UNITS = 14;
   // fromIndex 미지정 = 현재 문장부터(로드 시 워밍업). 배속 변경 시엔 index+1 부터(현재 문장은
   // 이미 재생 중이라 합성 불필요 — 괜히 넣으면 체인 맨 앞을 죽은 합성이 차지한다).
   const warmUp = (fromIndex?: number) => {

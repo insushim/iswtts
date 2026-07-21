@@ -23,7 +23,10 @@ import { stopBgSound } from './bgSound';
 
 const SILENCE_FILE = 'anchor-silence.wav';
 const SILENCE_SECONDS = 2;
-const REMOTE_CONFIRM_MS = 300;
+// 원격 조작 확인 대기(ms). 짧을수록 알림창 ⏸ 반응이 빠르고, 문장 전환과 겹칠 확률도 준다
+// (겹쳐도 resolvePendingRemote 가 구제하지만 창 자체를 좁히는 편이 낫다). 과도 상태
+// (재생 직후의 playing:false 등)를 걸러낼 만큼은 남긴다.
+const REMOTE_CONFIRM_MS = 200;
 
 let anchor: AudioPlayer | null = null;
 let sessionActive = false; // 잠금화면 등록 여부
@@ -73,7 +76,45 @@ function ensureSilenceUri(): string {
   return f.uri;
 }
 
+// 마지막으로 관측한 앵커 재생 상태(네이티브 프로퍼티 읽기가 실패/지연될 때의 근거).
+let lastObservedPlaying = false;
+
+/**
+ * 확인 대기 중인 불일치를 "지금" 판정한다(대기 만료를 기다리지 않고).
+ * @returns 원격 조작으로 판정했으면 true.
+ *
+ * ⚠️ v1.27.0 급소: 이 즉시 판정이 없으면 알림창 ⏸ 가 통째로 무시된다. 낭독은 문장마다
+ * startMediaSession → anchor.play() 를 부르는데, 사용자가 ⏸ 를 눌러 앵커가 멈춘 뒤
+ * 확인 창(300ms) 안에 문장이 넘어가면 그 play() 가 앵커를 되살려 "불일치 해소"로 보이고
+ * (onAnchorStatus 의 playing === desiredPlaying 분기) 타이머가 취소된다 — 정지 신호가
+ * 사라지고 낭독은 계속된다. 사용자 보고 2026-07-21 "알림창 멈춤은 아예 안 되고 앱에
+ * 들어가야 멈춘다". 그래서 startMediaSession 은 앵커를 다시 켜기 "전에" 이 함수를 부른다.
+ */
+function resolvePendingRemote(): boolean {
+  if (!confirmTimer) return false;
+  clearTimeout(confirmTimer);
+  confirmTimer = null;
+  if (!sessionActive || !anchor) return false;
+  let now = lastObservedPlaying;
+  try {
+    now = anchor.playing;
+  } catch {
+    /* 네이티브 읽기 실패 — 마지막 관측값으로 판단 */
+  }
+  if (now === desiredPlaying) return false; // 과도 상태였음 — 무시
+  if (now) {
+    handlers?.onRemotePlay();
+    return true;
+  }
+  if (anchorReachedPlaying) {
+    handlers?.onRemotePause();
+    return true;
+  }
+  return false;
+}
+
 function onAnchorStatus(playing: boolean): void {
+  lastObservedPlaying = playing;
   if (playing) anchorReachedPlaying = true;
   if (playing === desiredPlaying) {
     if (confirmTimer) {
@@ -83,14 +124,7 @@ function onAnchorStatus(playing: boolean): void {
     return;
   }
   if (confirmTimer) return; // 이미 확인 대기 중
-  confirmTimer = setTimeout(() => {
-    confirmTimer = null;
-    if (!sessionActive || !anchor) return;
-    const now = anchor.playing;
-    if (now === desiredPlaying) return; // 과도 상태였음 — 무시
-    if (now) handlers?.onRemotePlay();
-    else if (anchorReachedPlaying) handlers?.onRemotePause();
-  }, REMOTE_CONFIRM_MS);
+  confirmTimer = setTimeout(resolvePendingRemote, REMOTE_CONFIRM_MS);
 }
 
 function ensureAnchor(): AudioPlayer | null {
@@ -133,6 +167,25 @@ function requestNotificationPermission(): void {
 export function startMediaSession(title: string): void {
   const p = ensureAnchor();
   if (!p) return;
+  // 대기 중이던 원격 조작 판정을 먼저 확정한다(resolvePendingRemote 주석 — 문장 전환의
+  // play() 가 알림창 ⏸ 를 덮어쓰는 것을 막는 급소). 원격 정지로 확정되면 스토어 pause 가
+  // 곧바로 stopMediaSession 까지 돌리므로 여기서 세션을 다시 켜지 않고 즉시 반환한다.
+  if (resolvePendingRemote()) return;
+  // 안전망: 상태 이벤트를 못 받은(또는 놓친) 원격 정지. 우리가 재생을 의도했고 앵커가 실제
+  // 재생에 도달한 적이 있는데 지금 멈춰 있다면 우리가 안 시킨 정지일 수 있다.
+  // ⚠️ 여기서 "즉시" 정지로 확정하면 안 된다(교차검증 Gemini CRITICAL 2026-07-21): 버퍼링·
+  // 앱 재개 직후 같은 과도 상태의 playing:false 를 원격 ⏸ 로 오판해 낭독이 저절로 멈춘다 —
+  // 이 파일 상단이 "즉시 판정 금지"를 원칙으로 세운 바로 그 이유다. 대신 같은 확인 창에
+  // 태우고 이번 호출은 앵커를 켜지 않는다: 과도 상태였다면 playWhenReady 가 살아 있어
+  // 200ms 뒤엔 스스로 재생 중으로 관측되고(무판정 통과), 진짜 ⏸ 였다면 그대로 확정된다.
+  try {
+    if (desiredPlaying && anchorReachedPlaying && !p.playing) {
+      if (!confirmTimer) confirmTimer = setTimeout(resolvePendingRemote, REMOTE_CONFIRM_MS);
+      return;
+    }
+  } catch {
+    /* 네이티브 읽기 실패 — 종전대로 진행 */
+  }
   requestNotificationPermission();
   // 정지→재생 전환 시에만 리셋(문장마다 리셋하면 원격 정지 판정 창이 매 문장 닫힌다).
   if (!desiredPlaying) anchorReachedPlaying = false;
@@ -156,8 +209,10 @@ export function startMediaSession(title: string): void {
   } catch {
     /* 잠금화면 미지원/등록 실패 — 다음 호출에서 재시도, 낭독은 계속 */
   }
+  // 이미 재생 중이면 다시 켜지 않는다 — 앵커를 문장마다 play() 로 두들기면 원격 조작과
+  // 우리 호출이 뒤섞여 상태 판정이 흔들린다(FGS 유지에도 재호출은 불필요).
   try {
-    p.play();
+    if (!p.playing) p.play();
   } catch {
     /* noop */
   }

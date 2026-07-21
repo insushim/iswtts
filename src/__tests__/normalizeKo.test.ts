@@ -214,3 +214,23 @@ describe('어미 병합 — 닫는 따옴표 경계(codex 교차검증 지적)',
     }
   });
 });
+
+describe('말줄임 표기 통일(v1.27.0) — ASCII 점 연속은 이 팩이 "소리로 읽는다"', () => {
+  // 실측 2026-07-21(ell_probe.py): "그는... 조용히 걸었다."가 "그는… 조용히 걸었다."보다
+  // +0.47s 길고 그 중 유성음 +0.30s(= 무음 쉼이 아니라 발성). 사용자 보고의 "으데쓰" 정체.
+  test('.. ... .... 는 모두 …로 접힌다', () => {
+    expect(normalizeForSpeech('그는... 조용히 걸었다.')).toBe('그는… 조용히 걸었다.');
+    expect(normalizeForSpeech('그는.. 걸었다')).toBe('그는… 걸었다');
+    expect(normalizeForSpeech('그랬다....')).toBe('그랬다…');
+  });
+  test('유니코드 변형(‥ ⋯)과 연속 …도 하나로', () => {
+    expect(normalizeForSpeech('그는‥ 걸었다')).toBe('그는… 걸었다');
+    expect(normalizeForSpeech('그는⋯⋯ 걸었다')).toBe('그는… 걸었다');
+    expect(normalizeForSpeech('그는…… 걸었다')).toBe('그는… 걸었다');
+  });
+  test('보통 마침표 1개·소수점·날짜 연쇄는 건드리지 않는다', () => {
+    expect(normalizeForSpeech('걸었다.')).toBe('걸었다.');
+    expect(normalizeForSpeech('36.5도')).toContain('점');
+    expect(normalizeForSpeech('1945. 8. 15.')).toContain('년');
+  });
+});

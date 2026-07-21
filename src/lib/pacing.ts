@@ -34,7 +34,9 @@ const RUBATO_REST_MS = 60;
 const TRAIL_QUOTES = /["'”’」』)\]）】]+$/;
 const ENDS_DIALOGUE = /["'”’」』]$/;
 const STARTS_DIALOGUE = /^["'“‘「『]/;
-const ELLIPSIS_END = /(?:…|⋯|‥|\.{3})$/;
+// 마침표 2개도 말줄임으로 본다(v1.27.0): 합성 정규화가 '..'도 …로 접으므로(normalizeKo ⓪)
+// 여기서 3개만 인정하면 '소리는 말줄임인데 여운 쉼은 없는' 불일치가 생긴다(교차검증 지적).
+const ELLIPSIS_END = /(?:…|⋯|‥|\.{2,})$/;
 
 /** 문장이 말줄임(꼬리 따옴표류 무시)으로 끝나는가 — 여운 문장 판정.
  *  쉼(sentenceGapMs 말줄임 여운)과 완급(rate.ts sherpaRubato 의 항상-감속)이 같은 판정을
