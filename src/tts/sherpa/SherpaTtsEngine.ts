@@ -81,8 +81,10 @@ function releasePreload(entry: CacheEntry): void {
 // 오는 무거운 문장을 덮어 지터를 흡수한다. 폰이 *평균적으로* 예산 안이면 이걸로 평탄해지고,
 // *평균적으로도* 못 따라가면 버퍼로는 못 고친다(그땐 진단이 "준비 속도"로 알려줌).
 // (합성은 체인 직렬이라 동시 CPU 부하는 그대로 1건씩 — 큐만 깊어진다.)
-// 메모리: 파일은 디스크 캐시(메모리 아님) — 44.1kHz WAV ≈ 1MB/5초 × 24 ≈ 24MB(cacheSweep 정리).
-const MAX_CACHE = 24;
+// 메모리: 파일은 디스크 캐시(메모리 아님) — 44.1kHz WAV ≈ 1MB/5초 × 36 ≈ 36MB(cacheSweep 정리).
+// v1.27.2: 24→36(prefetchUnits 20→30 동반) — 사용자 기기가 2.5× 합성 예산에 걸쳐 있어
+// (느린 기기 경고 발동 실측) 버퍼를 더 깊게 잡아 CPU 스파이크 지터 흡수 폭을 키운다.
+const MAX_CACHE = 36;
 // 미리 만들어 두는 AudioPlayer 수 상한. 파일 캐시(8)와 달리 플레이어는 네이티브 자원이라
 // 다음 발화 몫만 준비해 둔다(문장 시작 즉시 재생 효과는 1~2개로 이미 다 얻는다).
 const MAX_PRELOAD = 2;
@@ -92,9 +94,21 @@ const STATUS_UPDATE_MS = 80;
 // 대기하는 것을 막는다 — 초과 시 이 건만 실패시키고(폴백 유도) 체인은 계속 흐른다.
 const SYNTH_TIMEOUT_MS = 60_000;
 // 초단문("예!"·"응.")의 발화 구간이 재생에서 차지해야 하는 최소 실시간(ms) —
-// effectivePlaybackRate 가 이 아래로 압축되지 않게 재생속도를 낮춘다(하한 1×). 250ms =
+// effectivePlaybackRate 가 이 아래로 압축되지 않게 재생속도를 낮춘다. 250ms =
 // 통상 문장(발화 600ms+)은 2.5×에서도 캡이 설정 배속 위라 무영향인 보수값.
 const MIN_REAL_SPEECH_MS = 250;
+// 캡 대상 상한(v1.27.2): 발화가 이보다 길면 캡을 아예 안 건다. v1.27.1의 무제한 캡은
+// 발화 250×배속 ms 미만의 "짧은 편 문장 전부"를 늦춰, 짧은 첫 세그먼트(분할 대사)로
+// 시작하는 문장이 "처음엔 1×였다 빨라지는" 램프로 체감됐다(사용자 보고 2026-07-23).
+// 진짜 초단문(감탄사·단답)만 대상으로 좁힌다.
+const SHORT_CAP_MAX_SPEECH_MS = 400;
+// 캡 하한 = 설정 배속의 60%. 1×까지 뚝 떨어뜨리면 주변 문장(2.5×)과의 대비가 램프로
+// 들린다 — "예!"(발화 300ms)는 2.5×에서 1.5× 안팎 = 실 200ms(가청 충분·대비 완화).
+const SHORT_CAP_FLOOR_RATIO = 0.6;
+// 낱자 없는 발화의 무음 길이(파일에 굽는 값 — 재생 스트레치로 배속 비례 축소).
+const SILENT_UTTERANCE_MS = 600;
+// 낱자(문자·숫자) 판정 — 무음 발화 분기(doSynthesize)용.
+const SPOKEN_HAS_WORD = /[\p{L}\p{N}]/u;
 
 // ── 장문 절 조립·숨소리 파라미터(≤3× 기준 체감, >3× 는 compressSilence 가 재압축) ──
 // 절 이음새 쉼 = 절 꼬리 80 + 삽입 240 + 절 머리 40(LEAD_PAD_MS) ≈ 360ms.
@@ -136,7 +150,7 @@ export class SherpaTtsEngine implements TtsEngine {
   readonly id = 'sherpa';
   readonly offline = true;
   // 오프라인은 CPU 가 재생을 아슬아슬하게 따라가므로 깊게 미리 만든다(MAX_CACHE 보다 작게).
-  readonly prefetchUnits = 20;
+  readonly prefetchUnits = 30;
 
   private native: NativeTts | null = null;
   private initPromise: Promise<NativeTts> | null = null;
@@ -510,8 +524,10 @@ export class SherpaTtsEngine implements TtsEngine {
   // (발화 600ms+)은 캡이 설정 배속 위라 무영향.
   private effectivePlaybackRate(synth: Synth, params: SpeakParams): number {
     const base = sherpaPlaybackRate(params.rate, synth.trimFactor) * this.paceComp(synth, params);
-    if (!Number.isFinite(synth.speechMs)) return base; // >3× 스마트 스피드 경로 — 캡 없음
-    return Math.min(base, Math.max(1, synth.speechMs / MIN_REAL_SPEECH_MS));
+    // 캡 미적용: >3× 스마트 스피드 경로(Infinity)와 초단문 아닌 발화(SHORT_CAP_MAX 주석).
+    if (!Number.isFinite(synth.speechMs) || synth.speechMs >= SHORT_CAP_MAX_SPEECH_MS) return base;
+    const cap = Math.max(1, base * SHORT_CAP_FLOOR_RATIO, synth.speechMs / MIN_REAL_SPEECH_MS);
+    return Math.min(base, cap);
   }
 
   // 현재 재생 중 문장의 완급을 "요청된 rate" 기준으로 재계산. 저장된 comp 를 재사용하면
@@ -648,11 +664,32 @@ export class SherpaTtsEngine implements TtsEngine {
     // 발화 정규화(한국어만): 숫자→한글 읽기, 괄호 한자 주석 제거(normalizeKo.ts — 근거·실측
     // 그 파일). 합성 입력만 바꾸고, 하이라이트 경계는 아래에서 "원문" 기준으로 계산한다.
     const lang = langOf(params.language);
-    const spokenRaw = lang === 'ko' ? normalizeForSpeech(text) : text;
-    // 정규화가 전부 지운 퇴화 입력(따옴표·기호뿐인 문장)은 마침표 하나로 대체 — 빈 문자열
-    // 합성은 "빈 오디오 = 실패" 경로를 타 서킷브레이커를 열 수 있다(교차검증 codex 지적).
-    // 모델은 "."에 짧은 무음을 만들어 문장이 조용히 지나간다.
-    const spoken = spokenRaw.trim() ? spokenRaw : '.';
+    const spoken = lang === 'ko' ? normalizeForSpeech(text) : text;
+
+    // 낱자(문자·숫자) 없는 발화("“…….”" 침묵 대사·기호뿐인 문장)는 모델을 부르지 않고
+    // 무음을 굽는다. 실측(2026-07-23 ell-probe3): 이 모델은 구두점-only 입력에 "큰 유성
+    // 잡음"을 만든다 — "…" 단독 피크 0.535, "…," 0.772(일반 발화 0.3~0.6과 동급). 사용자
+    // 보고 "'……' 문장에서 '으크' 소리"의 정체. 빈 문자열 합성의 실패→서킷브레이커 경로도
+    // 함께 막는다(v1.27.1의 '.' 대체를 이 경로가 대체 — '.'도 침묵이 목적이면 모델 호출
+    // 자체가 불필요). speechMs=Infinity: 무음은 초단문 캡 대상이 아니다(설정 배속 그대로
+    // 짧게 지나가는 것이 침묵 대사의 의도).
+    if (!SPOKEN_HAS_WORD.test(spoken)) {
+      const sampleRate = 44100;
+      const silent = new Array<number>(Math.round((sampleRate * SILENT_UTTERANCE_MS) / 1000)).fill(0);
+      const boundaries = estimateWordBoundaries(text, silent, sampleRate);
+      const dir = (cacheDirectory || '').replace(/^file:\/\//, '');
+      if (!dir) throw new Error('캐시 디렉토리 없음');
+      const name = `sherpa-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.wav`;
+      await saveAudioToFile({ samples: silent, sampleRate }, `${dir}${name}`);
+      const uri = `file://${dir}${name}`;
+      if (state.cancelled) {
+        deleteAsync(uri, { idempotent: true }).catch(() => { /* noop */ });
+        throw new Error('cancelled');
+      }
+      state.uri = uri;
+      recordSynth(Date.now() - synthStart, SILENT_UTTERANCE_MS);
+      return { uri, boundaries, trimFactor: 1, tempoComp: 1, rubatoRaw: 1, speechMs: Infinity };
+    }
     // 장문은 절(쉼표) 단위로 나눠 각각 합성 후 이어 붙인다(chunkKo.ts — 장문 운율 붕괴 대책).
     const chunks = lang === 'ko' ? chunkForSynthesis(spoken) : [spoken];
 

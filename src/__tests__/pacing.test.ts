@@ -123,6 +123,8 @@ describe('endsWithEllipsis — 여운 문장 판정(쉼·완급 공용, v1.26.0)
     expect(endsWithEllipsis('그는 아무 말도 하지 못했다…')).toBe(true);
     expect(endsWithEllipsis('기억이 나지 않았다...')).toBe(true);
     expect(endsWithEllipsis('"어쩌면, 그럴지도…"')).toBe(true);
+    expect(endsWithEllipsis('“친분을 쌓는 것을 보면…….”')).toBe(true); // 말줄임+마침표(세로쓰기 관행, v1.27.2)
+    expect(endsWithEllipsis('보면….')).toBe(true);
   });
   it('평서·중간 말줄임은 거짓', () => {
     expect(endsWithEllipsis('그는 문을 열었다.')).toBe(false);

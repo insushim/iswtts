@@ -435,7 +435,10 @@ export const usePlayer = create<PlayerState>((set, get) => {
   // 아직 남아 있는 시작 부분의 느려짐이 줄 것 같다". 2×는 합성 예산(RTF<0.5)이 빠듯해
   // 워밍업 8문장으로는 재생이 초반에 버퍼를 따라잡는다 — 엔진 파일 캐시 상한(MAX_CACHE 24)과
   // 재생 중 선행합성(prefetchUnits 20) 안쪽이라 서로 밀어내지 않는다.
-  const WARMUP_UNITS = 14;
+  // v1.27.2: 14 → 30. 사용자 요청("훨씬 더 앞에서부터 미리") + 이 기기의 느린 기기 경고
+  // 실측 발동(2.5× 예산 경계) — 재생 시작 전 버퍼를 최대로 쌓아 초반 지터를 흡수한다.
+  // 엔진 캐시 상한(MAX_CACHE 36)·선행합성(prefetchUnits 30) 안쪽.
+  const WARMUP_UNITS = 30;
   // fromIndex 미지정 = 현재 문장부터(로드 시 워밍업). 배속 변경 시엔 index+1 부터(현재 문장은
   // 이미 재생 중이라 합성 불필요 — 괜히 넣으면 체인 맨 앞을 죽은 합성이 차지한다).
   const warmUp = (fromIndex?: number) => {

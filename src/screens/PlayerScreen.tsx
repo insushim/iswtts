@@ -221,7 +221,10 @@ export default function PlayerScreen({ route, navigation }: Props) {
               style={{
                 color: p.highlightText,
                 backgroundColor: p.highlight,
-                fontWeight: '800',
+                // ⚠️ fontWeight 를 문장('700')과 다르게 주지 말 것 — 굵기가 다르면 글자 폭이
+                // 변해 하이라이트가 단어를 옮겨 다닐 때마다 줄바꿈이 재계산되고, 문장 전체가
+                // 이리저리 밀리는 "배치 흔들림"이 된다(사용자 보고 2026-07-23). 강조는
+                // 배경색+글자색 대비만으로 — 글리프 폭이 완전히 동일해 레이아웃이 고정된다.
               }}
             >
               {word}
