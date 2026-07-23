@@ -73,10 +73,11 @@ describe('guessDialogueGenders — 2패스 인접 문장 단서(v1.25.3)', () =>
     const g = guessDialogueGenders(['"어서 오렴."', '어머니는 문을 열어 주었다.']);
     expect(g[0]).toBe('female');
   });
-  test('연속 대화 구간(양쪽 다 대사)은 확장하지 않는다', () => {
+  test('연속 대화 구간은 앵커에서 교대 전파(v1.27.1 — 구 "확장 금지"의 완화)', () => {
     const g = guessDialogueGenders(['사내가 물었다.', '"왔나?"', '"네."', '"앉게."']);
-    expect(g[1]).toBe('male'); // 소개 직후 1건만
-    expect(g[2]).toBeNull(); // 교대 화자 넘겨짚기 금지
+    expect(g[1]).toBe('male'); // 소개 직후(앵커)
+    expect(g[2]).toBe('female'); // 교대: 상대 화자 = 반대 성별(대비 확보)
+    expect(g[3]).toBe('male'); // 다시 첫 화자
   });
   test('자기 문장 단서가 항상 우선', () => {
     const g = guessDialogueGenders(['사내가 말했다.', '"그래." 그녀가 답했다.']);
@@ -94,9 +95,51 @@ describe('탐색 창 2문장(v1.27.0)', () => {
     const s = ['사내가 문을 열었다.', '잠시 망설였다.', '바람이 불었다.', '"누구요?"'];
     expect(guessDialogueGenders(s)[3]).toBeNull();
   });
-  test('중간에 다른 대사가 끼면 중단(화자 교대 가능성)', () => {
+  test('중간에 다른 대사가 끼면 지문 전파는 중단, 대신 교대 전파가 채운다(v1.27.1)', () => {
     const s = ['사내가 문을 열었다.', '"거기 누구요?"', '"저예요."'];
-    expect(guessDialogueGenders(s)[2]).toBeNull();
+    expect(guessDialogueGenders(s)[2]).toBe('female'); // 앵커(male)의 교대
+  });
+});
+
+describe('대화 런 교대 전파(v1.27.1) — "거의 다 남자 목소리" 보고의 해소', () => {
+  const { guessDialogueGenders } = require('../lib/speakerGender');
+  test('앵커 없는 런은 그대로(무근거 넘겨짚기 금지 유지)', () => {
+    const g = guessDialogueGenders(['"왔나?"', '"네."', '"앉게."']);
+    expect(g).toEqual([null, null, null]);
+  });
+  test('자체 단서 앵커가 런 중간에 있어도 양쪽으로 교대', () => {
+    const g = guessDialogueGenders(['"먼저 말하지."', '"그래." 그녀가 답했다.', '"고맙군."']);
+    expect(g[1]).toBe('female');
+    expect(g[0]).toBe('male');
+    expect(g[2]).toBe('male');
+  });
+  test('앵커끼리 패리티 모순(같은 화자 연속 등)이면 런 전체 포기', () => {
+    const g = guessDialogueGenders([
+      '"하나." 사내가 말했다.',
+      '"둘." 사내가 말했다.', // 인접 앵커가 같은 성별 = 교대 관행 밖
+      '"셋."',
+    ]);
+    expect(g[0]).toBe('male');
+    expect(g[1]).toBe('male');
+    expect(g[2]).toBeNull(); // 전파 안 함
+  });
+  test('꼬리표 후행 앵커(런 끝 지문 단서)에서도 역방향 교대', () => {
+    const g = guessDialogueGenders(['"들어가도 될까?"', '"어서 오렴."', '어머니는 문을 열어 주었다.']);
+    expect(g[1]).toBe('female'); // 기존 후행 전파
+    expect(g[0]).toBe('male'); // 교대
+  });
+  test('문단(장면) 경계는 넘지 않는다 — 앞 장면 패리티 누설 방지(교차검증 Gemini)', () => {
+    const s = ['사내가 물었다.', '"왔나?"', '"네."', '"여긴 어디지?"'];
+    // 문장 3이 새 문단(장면) 시작 — 교대 전파가 거기서 끊겨야 한다.
+    const g = guessDialogueGenders(s, new Set([3]));
+    expect(g[1]).toBe('male');
+    expect(g[2]).toBe('female');
+    expect(g[3]).toBeNull(); // 새 장면 첫 대사에 이전 장면 패리티가 새지 않는다
+  });
+  test('낫표(제목)·홑따옴표(생각) 지문은 대사 런에 끼지 않는다(패리티 오염·런 접합 방지)', () => {
+    const g = guessDialogueGenders(['"왔나?" 사내가 물었다.', '『무림비사』가 놓여 있었다.', '"네."']);
+    expect(g[0]).toBe('male');
+    expect(g[2]).toBeNull(); // 낫표 문장이 런을 잇지 않으므로 단독 런(길이 1) = 전파 없음
   });
 });
 

@@ -104,7 +104,7 @@ export function guessDialogueGenders(
     return QUOTE_SPANS.test(s);
   });
   const own = sentences.map(guessDialogueGender);
-  return sentences.map((s, i) => {
+  const result = sentences.map((s, i) => {
     if (own[i]) return own[i];
     if (!hasQuote[i]) return null; // 지문 문장 자체는 확장 대상 아님
     // v1.27.0: 탐색 창 1 → 2 문장. 소설은 "사내가 문을 열었다. 잠시 망설였다. '누구요?'"
@@ -125,6 +125,69 @@ export function guessDialogueGenders(
     };
     return scan(i - 1, -1) ?? scan(i + 1, 1);
   });
+  alternateDialogueRuns(result, sentences.map((s) => DIALOGUE_QUOTE.test(s)), paraStarts);
+  return result;
+}
+
+// 교대 전파 상한 — 앵커(확정 문장)에서 이 거리까지만 채운다. 런이 길어질수록 "번갈아
+// 말한다" 관행이 흐트러질(끼어드는 3자·같은 화자 연속) 확률이 커진다.
+const ALT_MAX_DIST = 8;
+// 런 멤버십 판정용 "대사" 따옴표 — dialogue.ts PAIRS(발화로 취급하는 큰따옴표 계열)와
+// 정렬. QUOTE_SPANS(hasQuote)는 홑따옴표(생각)·낫표(제목)까지 넓게 봐서, '강조'나 『책
+// 제목』만 있는 지문이 런에 끼어 패리티를 밀거나 별개 대화 둘을 하나로 이어 붙인다 —
+// 교대 전파는 실제 발화 턴에만 건다.
+const DIALOGUE_QUOTE = /[“”"「」]/;
+
+// 3패스(v1.27.1): 대화 런(연속 대사 문장) 교대 전파. 한국 소설 조판 관행상 따옴표 대사가
+// 잇달아 나오면(각 턴이 별도 문장) 두 화자가 번갈아 말하는 교환이 압도적이다. 기존
+// 2패스는 런의 가장자리 문장만 인접 지문 단서를 받아 안쪽이 전부 미상 — 미상은 재생부가
+// "기본 화자의 반대 성별"로 폴백하므로 남/녀 교환의 절반이 통째로 남성으로 들렸다
+// ("지금은 거의 다 남자 목소리" 사용자 보고 2026-07-23). 런 안에 확정 문장이 하나라도
+// 있고 확정들끼리 패리티(홀짝 위치-성별 대응)가 모순 없으면 가까운 앵커에서 교대로 채운다.
+// 가드(오귀속 방지 — "교대 화자 넘겨짚기 금지" 기존 방침의 완화 조건):
+//  ① 앵커 없는 런은 그대로 둔다(무근거 넘겨짚기 금지 유지).
+//  ② 확정끼리 패리티 모순이면 런 전체 포기(같은 화자 연속 발화 등 관행 밖 구조 신호).
+//  ③ 전파 거리 상한(ALT_MAX_DIST).
+//  ④ 문단(장면) 경계를 넘지 않는다 — 2패스의 paraStarts 가드와 동형(교차검증 Gemini
+//     CRITICAL 2026-07-23: 지문 없이 장면이 바뀌는 연속 대사에서 앞 장면 패리티가 새어
+//     든다). 대화 턴은 관행상 "단일 개행"이라 빈 줄 문단(paraStarts)은 실제 장면 전환.
+function alternateDialogueRuns(
+  result: Array<SpeakerGender | null>,
+  hasQuote: boolean[],
+  paraStarts?: ReadonlySet<number>,
+): void {
+  const flip = (g: SpeakerGender): SpeakerGender => (g === 'male' ? 'female' : 'male');
+  let i = 0;
+  while (i < result.length) {
+    if (!hasQuote[i]) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < result.length && hasQuote[j + 1] && !paraStarts?.has(j + 1)) j++;
+    if (j > i) {
+      const anchors: number[] = [];
+      for (let k = i; k <= j; k++) if (result[k]) anchors.push(k);
+      // 패리티 일관성: 모든 앵커 쌍이 "거리 짝수 = 같은 성별"을 만족해야 교대 전파.
+      const consistent =
+        anchors.length > 0 &&
+        anchors.every(
+          (k) => ((k - anchors[0]) % 2 === 0) === (result[k] === result[anchors[0]]),
+        );
+      if (consistent) {
+        for (let k = i; k <= j; k++) {
+          if (result[k]) continue;
+          let best = -1;
+          for (const a of anchors) if (best < 0 || Math.abs(k - a) < Math.abs(k - best)) best = a;
+          if (best >= 0 && Math.abs(k - best) <= ALT_MAX_DIST) {
+            const g = result[best] as SpeakerGender;
+            result[k] = (k - best) % 2 === 0 ? g : flip(g);
+          }
+        }
+      }
+    }
+    i = j + 1;
+  }
 }
 
 // Supertonic 3 화자(sid 0~9)의 성별 — F0 자기상관 실측(2026-07-20, sid_gender.py):

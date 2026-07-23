@@ -88,6 +88,15 @@ describe('짧은 문장 머리 여유(v1.27.0)', () => {
   test('앞뒤 공백은 판정에서 무시', () => {
     expect(leadPadMsFor('  똑똑!  ')).toBe(SHORT_LEAD_PAD_MS);
   });
+  test('배속 비례(v1.27.1): 파일에 굽는 패드는 스트레치로 줄어드니 배속을 곱해 실시간 흡수량을 유지', () => {
+    expect(leadPadMsFor('예!', 2.5)).toBe(Math.round(SHORT_LEAD_PAD_MS * 2.5));
+    expect(leadPadMsFor('예!', 1)).toBe(SHORT_LEAD_PAD_MS);
+    expect(leadPadMsFor('예!', undefined)).toBe(SHORT_LEAD_PAD_MS);
+    expect(leadPadMsFor('예!', 0.5)).toBe(SHORT_LEAD_PAD_MS); // 저속은 하한 1× 취급
+    expect(leadPadMsFor('예!', 5)).toBe(SHORT_LEAD_PAD_MS * 3); // 상한 3(>3×는 압축 경로라 무관)
+    expect(leadPadMsFor('예!', 2.1)).toBe(Math.round(SHORT_LEAD_PAD_MS * 2.5)); // 0.5 단위 올림 양자화(캐시 키 파편화 방지)
+    expect(leadPadMsFor('그는 조용히 걸었다.', 2.5)).toBe(LEAD_PAD_MS); // 일반 문장은 배속 무관
+  });
   test('패드가 align 의 쉼 최소길이(120ms)보다 길다 = 하이라이트가 쉼으로 분류', () => {
     expect(SHORT_LEAD_PAD_MS).toBeGreaterThan(120);
   });

@@ -67,6 +67,17 @@ const ELLIPSIS_RUBATO_MIN = 0.9;
 const ELLIPSIS_RUBATO_MAX = 0.94;
 // tempoComp × rubato 곱의 하한 — 실측 검증 구간(0.88 단독 −11%) 근방까지만 허용.
 export const SPEED_COMP_FLOOR = 0.85;
+// 루바토를 적용하는 배속 상한(v1.27.1). 루바토는 1~1.5× 감상 속도에서 "사람 같다"로 태어난
+// 기능인데(v1.25.0), 2.5× 훑어 듣기에선 문장 ~30%가 4~10% 느려지는 게 "가끔 문장이
+// 느려진다"는 결함으로 체감된다(사용자 보고 2026-07-23 — 말줄임 문장은 "항상" 감속이라
+// 말줄임 많은 소설에서 특히 잦다). 완급 변주가 의미 있는 통상 감상 속도(≤2×)에만 적용.
+// 템포 평준화(tempoComp)는 모델의 짧은 문장 과속 "보정"이라 게이트하지 않는다.
+export const RUBATO_MAX_RATE = 2.0;
+/** 이 배속에서 루바토(문장 완급 변주)가 실효인가 — sherpaPaceComp 와 재생부(pacing
+ *  afterRubato 숨 고르기 판정)가 같은 게이트를 공유한다. */
+export function rubatoActive(rate?: number): boolean {
+  return !Number.isFinite(rate as number) || (rate as number) <= RUBATO_MAX_RATE;
+}
 export function sherpaRubato(text: string): number {
   // djb2 — pacing.ts 지터와 같은 계열(결정론 변주의 공용 도구).
   let h = 5381;
@@ -100,7 +111,10 @@ export function sherpaPaceComp(
 ): number {
   if (sherpaTrimEnabled(opts.rate)) return 1;
   const t = Number.isFinite(tempoComp) && tempoComp > 0 ? tempoComp : 1;
-  const r = opts.rubatoOn && Number.isFinite(rubatoRaw) && rubatoRaw > 0 ? rubatoRaw : 1;
+  const r =
+    opts.rubatoOn && rubatoActive(opts.rate) && Number.isFinite(rubatoRaw) && rubatoRaw > 0
+      ? rubatoRaw
+      : 1;
   // min(1): 현 도메인(t·r ≤ 1)에선 no-op — 미래에 가속 변주(>1)가 생겨도 완급이 설정
   // 배속을 넘지 않게 하는 방어선.
   return Math.max(SPEED_COMP_FLOOR, Math.min(1, t * r));

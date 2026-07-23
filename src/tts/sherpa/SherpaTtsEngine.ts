@@ -16,12 +16,13 @@ import { disposePlayer } from '../disposePlayer';
 import {
   compressSilence,
   trimEdgeSilence,
+  quietRuns,
   LEAD_PAD_MS,
   leadPadMsFor,
   TRAIL_PAD_MS,
   EDGE_FADE_MS,
 } from './smartSpeed';
-import { normalizeForSpeech } from './normalizeKo';
+import { normalizeForSpeech, SPOKEN_QUOTES } from './normalizeKo';
 import { chunkForSynthesis, hasClauseComma, chunkPauseJitterMs } from './chunkKo';
 import { makeBreathSamples, speechStats, breathDurMs } from './breathWav';
 import { estimateWordBoundaries, type WordBoundary } from './align';
@@ -39,6 +40,10 @@ type Synth = {
   trimFactor: number;
   tempoComp: number;
   rubatoRaw: number;
+  // 트림 후 "발화 구간" 추정 길이(파일 길이 − 머리/꼬리 패드, ≤3× 경로만 — >3×는 Infinity).
+  // 초단문("예!")이 고배속에서 실시간 수백 ms 미만으로 압축돼 통째로 안 들리는 것을 막는
+  // 재생속도 하한 캡(effectivePlaybackRate)의 근거.
+  speechMs: number;
 };
 type SynthState = { cancelled: boolean; uri: string | null };
 // player: 합성 완료 시 미리 생성·prepare·배속 적용해 둔 재생기(프리로드) — 문장 전환이 play()
@@ -86,6 +91,10 @@ const STATUS_UPDATE_MS = 80;
 // 합성 1건 상한(첫 호출의 모델 로드 포함). 네이티브 hang 시 직렬화 체인 전체가 영구
 // 대기하는 것을 막는다 — 초과 시 이 건만 실패시키고(폴백 유도) 체인은 계속 흐른다.
 const SYNTH_TIMEOUT_MS = 60_000;
+// 초단문("예!"·"응.")의 발화 구간이 재생에서 차지해야 하는 최소 실시간(ms) —
+// effectivePlaybackRate 가 이 아래로 압축되지 않게 재생속도를 낮춘다(하한 1×). 250ms =
+// 통상 문장(발화 600ms+)은 2.5×에서도 캡이 설정 배속 위라 무영향인 보수값.
+const MIN_REAL_SPEECH_MS = 250;
 
 // ── 장문 절 조립·숨소리 파라미터(≤3× 기준 체감, >3× 는 compressSilence 가 재압축) ──
 // 절 이음새 쉼 = 절 꼬리 80 + 삽입 240 + 절 머리 40(LEAD_PAD_MS) ≈ 360ms.
@@ -492,9 +501,17 @@ export class SherpaTtsEngine implements TtsEngine {
   // 유효 재생속도 = 배속 보상식 × 문장 완급. 배속 계산은 과거 교차검증 CRITICAL 이 반복된
   // 깨지기 쉬운 지점이라 수식을 한 곳에 묶는다(교차검증 권고 2026-07-20) — preload·playFile
   // 이 이 헬퍼를 쓰고, setRate/setRateApprox 는 compFor(현재 문장 Synth 재계산)로 같은
-  // 곱을 유지한다.
+  // 곱을 유지한다(라이브 변경 잔여 구간만 초단문 캡이 빠지는 건 수용 — 수명이 문장 하나).
+  //
+  // 초단문 실시간 하한(v1.27.1): "예!" 같은 2~3음절 발화(발화 ~300ms)는 2.5×에서 실 120ms
+  // 로 압축돼 재생 시작 손실·순간 집중 어느 쪽으로든 "아예 안 읽은 것"처럼 들린다(사용자
+  // 보고 2026-07-23). 발화 구간이 최소 MIN_REAL_SPEECH_MS 는 실시간을 차지하도록 재생속도를
+  // 낮춘다 — 사람 낭독자도 감탄사·짧은 대답은 배속 비례로 압축하지 않는다. 일반 문장
+  // (발화 600ms+)은 캡이 설정 배속 위라 무영향.
   private effectivePlaybackRate(synth: Synth, params: SpeakParams): number {
-    return sherpaPlaybackRate(params.rate, synth.trimFactor) * this.paceComp(synth, params);
+    const base = sherpaPlaybackRate(params.rate, synth.trimFactor) * this.paceComp(synth, params);
+    if (!Number.isFinite(synth.speechMs)) return base; // >3× 스마트 스피드 경로 — 캡 없음
+    return Math.min(base, Math.max(1, synth.speechMs / MIN_REAL_SPEECH_MS));
   }
 
   // 현재 재생 중 문장의 완급을 "요청된 rate" 기준으로 재계산. 저장된 comp 를 재사용하면
@@ -515,7 +532,22 @@ export class SherpaTtsEngine implements TtsEngine {
     // (v1.26.1: 루바토 'r' 플래그 폐지 — 완급이 재생 스트레치로 이동해 파일에 안 구워진다.
     //  같은 문장은 rubato 토글과 무관하게 같은 파일을 재사용한다.)
     const breath = this.breathEffective(text, params) ? 'b' : '';
-    return `${sid}\u0000${sherpaModelSpeed(params.rate)}\u0000${langOf(params.language)}\u0000${breath}\u0000${text}`;
+    // 머리 패드도 파일에 구워진다 — 배속 비례 패드(v1.27.1, leadPadMsFor)라 짧은 문장은
+    // 배속 구간별로 키가 갈린다(일반 문장은 상수 40 = 종전대로 배속 무관 단일 키).
+    const lead = this.leadPadOf(text, params);
+    return `${sid}\u0000${sherpaModelSpeed(params.rate)}\u0000${langOf(params.language)}\u0000${breath}\u0000${lead}\u0000${text}`;
+  }
+
+  // 이 발화의 머리 무음 패드(ms) — keyOf 와 doSynthesize 가 "반드시" 이 한 함수를 공유한다.
+  // 판정이 갈리면 배속별 패드가 파일에 구워진 채 같은 키를 쓰게 돼(짧은 문장 캐시 오염)
+  // 배속 변경 후 옛 패드 파일이 재생된다. 원문이 충분히 길면(24자 초과 — 정규화로 8자
+  // 이하가 되는 건 한자 주석 대량 제거 같은 예외뿐) 정규화 비용 없이 일반 패드로 조기 확정.
+  private leadPadOf(text: string, params: SpeakParams): number {
+    if (langOf(params.language) !== 'ko') return leadPadMsFor(text, params.rate);
+    // 지름길 문턱은 따옴표를 벗긴 길이 기준(정규화도 벗기므로) — 따옴표가 잔뜩 붙은 짧은
+    // 대사가 원문 길이만으로 일반 문장 취급되는 것을 막는다(교차검증 codex 지적).
+    if (text.replace(SPOKEN_QUOTES, '').length > 24) return LEAD_PAD_MS;
+    return leadPadMsFor(normalizeForSpeech(text), params.rate);
   }
 
   private makeSynth(text: string, params: SpeakParams): CacheEntry {
@@ -616,7 +648,11 @@ export class SherpaTtsEngine implements TtsEngine {
     // 발화 정규화(한국어만): 숫자→한글 읽기, 괄호 한자 주석 제거(normalizeKo.ts — 근거·실측
     // 그 파일). 합성 입력만 바꾸고, 하이라이트 경계는 아래에서 "원문" 기준으로 계산한다.
     const lang = langOf(params.language);
-    const spoken = lang === 'ko' ? normalizeForSpeech(text) : text;
+    const spokenRaw = lang === 'ko' ? normalizeForSpeech(text) : text;
+    // 정규화가 전부 지운 퇴화 입력(따옴표·기호뿐인 문장)은 마침표 하나로 대체 — 빈 문자열
+    // 합성은 "빈 오디오 = 실패" 경로를 타 서킷브레이커를 열 수 있다(교차검증 codex 지적).
+    // 모델은 "."에 짧은 무음을 만들어 문장이 조용히 지나간다.
+    const spoken = spokenRaw.trim() ? spokenRaw : '.';
     // 장문은 절(쉼표) 단위로 나눠 각각 합성 후 이어 붙인다(chunkKo.ts — 장문 운율 붕괴 대책).
     const chunks = lang === 'ko' ? chunkForSynthesis(spoken) : [spoken];
 
@@ -677,13 +713,30 @@ export class SherpaTtsEngine implements TtsEngine {
     // - >3×(스마트 스피드): 내부 긴 쉼까지 압축하고 그만큼 재생 스트레치를 덜어낸다.
     let samples: number[];
     let trimFactor = 1;
+    // 발화 구간 추정(초단문 재생속도 캡용 — Synth.speechMs 주석). >3× 압축 경로는 캡 미적용.
+    let speechMs = Infinity;
     if (sherpaTrimEnabled(params.rate)) {
       const c = compressSilence(rawSamples, sampleRate);
       samples = c.samples;
       trimFactor = c.factor;
     } else {
-      // 짧은 문장은 머리 여유를 키운다(leadPadMsFor — "짧은 말 씹힘" 대책, smartSpeed.ts).
-      samples = trimEdgeSilence(rawSamples, sampleRate, leadPadMsFor(spoken), undefined, EDGE_FADE_MS);
+      // 짧은 문장은 머리 여유를 키운다(배속 비례 — "짧은 말 씹힘" 대책, smartSpeed.ts).
+      // ⚠️ 패드는 반드시 leadPadOf(키 계산과 동일 함수) — 갈리면 캐시 키=오디오 정합이 깨진다.
+      const leadPad = this.leadPadOf(text, params);
+      samples = trimEdgeSilence(rawSamples, sampleRate, leadPad, undefined, EDGE_FADE_MS);
+      // 발화 구간 = 전체 − 앞/뒤 무음 런 "실측"(quietRuns). "파일 − 패드 상수" 산식은 큰
+      // 패드 요구치(2.5×+ 짧은 문장)에서 트림이 스킵되면 모델의 원 무음(~0.9s)이 발화로
+      // 계산돼 초단문 캡이 무력화된다(교차검증 Claude 지적 — 하필 이 기능의 표적 구간).
+      const runs = quietRuns(samples, sampleRate);
+      let headQ = 0;
+      let tailQ = 0;
+      if (runs.length) {
+        const first = runs[0];
+        const last = runs[runs.length - 1];
+        if (first.s === 0) headQ = first.e;
+        if (last.e === samples.length) tailQ = Math.min(samples.length - headQ, samples.length - last.s);
+      }
+      speechMs = Math.max(0, ((samples.length - headQ - tailQ) / sampleRate) * 1000);
     }
     // 단어 하이라이트: 최종(트림 후) 샘플에서 발화 구간 위에만 글자수 비례 분배 — 쉼 동안
     // 하이라이트가 전진하지 않고, 무음 오프셋 오차가 원천 제거된다.
@@ -717,7 +770,14 @@ export class SherpaTtsEngine implements TtsEngine {
     // 원문은 실제 발화가 훨씬 길어 원문 기준이면 짧은 문장으로 오판, 교차검증 2026-07-19).
     // 루바토 해시는 원문(text) 기준 — pacing.ts afterRubato(재생부)와 같은 입력이어야
     // "루바토 문장 뒤 숨 고르기" 판정이 일치한다.
-    return { uri, boundaries, trimFactor, tempoComp: sherpaTempoComp(spoken), rubatoRaw: sherpaRubato(text) };
+    return {
+      uri,
+      boundaries,
+      trimFactor,
+      tempoComp: sherpaTempoComp(spoken),
+      rubatoRaw: sherpaRubato(text),
+      speechMs,
+    };
   }
 
   // 절 청크들을 순서대로 합성해 한 문장 파형으로 조립한다(직렬 — 이미 synthChain 안).

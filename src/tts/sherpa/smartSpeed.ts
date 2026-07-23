@@ -113,13 +113,34 @@ export const SHORT_LEAD_PAD_MS = 140;
  *  일반 서술문은 들어오지 않는다. */
 export const SHORT_SENTENCE_CHARS = 8;
 
+// 배속 비례 상한 — SHORT_LEAD_PAD_MS 가 흡수하는 재생 시작 손실은 "실시간" 현상인데 파일에
+// 굽는 무음은 재생 스트레치로 배속만큼 줄어든다(2.5×면 140→실 56ms — 사용자 보고 2026-07-23
+// "2.5×에서 '예!' 같은 짧은 말이 여전히 통째로 안 들린다"의 남은 설명). 배속을 곱해 실시간
+// 흡수량을 ≈140ms 로 일정하게 유지한다. 상한 3 = 스트레치 온전 구간(SONIC_FIRST_MAX)과 일치
+// (>3×는 compressSilence 경로라 이 패드 자체가 무관).
+// ⚠️ 패드가 파일에 구워지므로 이 값은 캐시 키에 포함돼야 한다(SherpaTtsEngine.keyOf —
+// 짧은 문장만 배속 구간별로 키가 갈리고, 일반 문장은 종전대로 배속 무관 단일 키).
+const LEAD_PAD_RATE_MAX = 3;
+
 /**
- * 이 발화에 쓸 머리 무음 여유(ms). 짧은 문장만 넉넉하게(SHORT_LEAD_PAD_MS 주석).
+ * 이 발화에 쓸 머리 무음 여유(ms). 짧은 문장만 넉넉하게(SHORT_LEAD_PAD_MS 주석) + 배속
+ * 비례(LEAD_PAD_RATE_MAX 주석).
  * ⚠️ 판정은 "정규화 후"(합성에 실제로 들어가는) 텍스트 기준 — 원문 기준이 아니어도 캐시
  * 키=오디오 정합은 유지된다(정규화는 원문·언어의 순수 함수이고 그 둘이 이미 키에 있다).
  */
-export function leadPadMsFor(spokenText: string): number {
-  return spokenText.trim().length <= SHORT_SENTENCE_CHARS ? SHORT_LEAD_PAD_MS : LEAD_PAD_MS;
+/** 짧은 문장 패드의 배속 버킷(0.5 단위 올림 양자화). 패드는 캐시 키에 들어가므로 배속의
+ *  연속 함수면 0.1 눈금마다 짧은 문장 키가 전부 갈려 배속 미세조정 때마다 캐시가 헛돈다 —
+ *  구간을 5개로 묶는다. 올림이라 흡수량은 항상 목표(≈140ms 실시간) 이상.
+ *  라이브 배속 변경의 스테일 큐 판정(player.applyRate)도 이 버킷을 비교한다 — 버킷이
+ *  바뀌면 짧은 문장 캐시 키가 갈려, 미리 채운 큐를 새 배속으로 다시 채워야 한다. */
+export function leadPadRateBucket(rate?: number): number {
+  const r = Number.isFinite(rate as number) ? (rate as number) : 1;
+  return Math.ceil(Math.min(LEAD_PAD_RATE_MAX, Math.max(1, r)) * 2) / 2;
+}
+
+export function leadPadMsFor(spokenText: string, rate?: number): number {
+  if (spokenText.trim().length > SHORT_SENTENCE_CHARS) return LEAD_PAD_MS;
+  return Math.round(SHORT_LEAD_PAD_MS * leadPadRateBucket(rate));
 }
 
 // 트림 후 남길 문장 꼬리 여유 = 문장 간 숨. 320ms(2026-07-18, 구 120): 1× 낭독이 사람

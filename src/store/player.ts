@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import type { TtsEngine } from '../tts/TtsEngine';
 import { getEngine, systemEngine } from '../tts';
 import { sherpaStats, resetSherpaStats } from '../tts/sherpa/stats';
-import { sherpaModelSpeed, sherpaTrimEnabled, sherpaRubato } from '../tts/sherpa/rate';
+import { sherpaModelSpeed, sherpaTrimEnabled, sherpaRubato, rubatoActive } from '../tts/sherpa/rate';
+import { leadPadRateBucket } from '../tts/sherpa/smartSpeed';
 import { contrastEdgeVoice, genderEdgeVoice } from '../tts/edge/voices';
 import { splitDialogue, type DialogueSegment } from '../lib/dialogue';
 import {
@@ -303,7 +304,10 @@ export const usePlayer = create<PlayerState>((set, get) => {
                 // RUBATO_REST). 판정은 방금 끝난 문장 전체를 엔진과 같은 순수 함수
                 // (sherpaRubato)에 넣어 계산 — 대사 분할 문장은 엔진이 세그먼트 단위로
                 // 해시해 판정이 어긋날 수 있으나 영향은 쉼 ±60ms 뿐(감속 자체와 무관).
-                afterRubato: cfg.rubato && sherpaRubato(st.sentences[st.index]) !== 1,
+                // 루바토 배속 게이트(rubatoActive)를 엔진(sherpaPaceComp)과 공유 — >2×에선
+                // 감속이 없으므로 숨 고르기 쉼도 없어야 판정이 일치한다(v1.27.1).
+                afterRubato:
+                  cfg.rubato && rubatoActive(cfg.rate) && sherpaRubato(st.sentences[st.index]) !== 1,
               })
             : 0;
         if (gap < GAP_MIN_MS) {
@@ -576,7 +580,12 @@ export const usePlayer = create<PlayerState>((set, get) => {
         if (
           activeEngine.id === 'sherpa' &&
           (sherpaModelSpeed(sherpaQueueRate) !== sherpaModelSpeed(rate) ||
-            sherpaTrimEnabled(sherpaQueueRate) !== sherpaTrimEnabled(rate))
+            sherpaTrimEnabled(sherpaQueueRate) !== sherpaTrimEnabled(rate) ||
+            // 짧은 문장 머리 패드는 배속 버킷별로 캐시 키가 갈린다(v1.27.1) — 버킷이 바뀌면
+            // 옛 배속 키의 미완료 큐가 스테일이라 새로 채운다. 안 하면 다음 짧은 문장에서
+            // 키 미스 + 취소 불가 in-flight 합성 뒤 대기(FIFO 정지 클래스 재도입 — 교차검증
+            // codex CRITICAL 2026-07-23).
+            leadPadRateBucket(sherpaQueueRate) !== leadPadRateBucket(rate))
         ) {
           activeEngine.cancelPending?.();
           warmUp(get().index + 1);
