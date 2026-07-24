@@ -67,3 +67,37 @@ describe('chunkPauseJitterMs — 절 이음새 쉼 지터(v1.25.0)', () => {
     expect(vals.size).toBeGreaterThan(5);
   });
 });
+
+// ── 균등 분배(v1.27.3) ──────────────────────────────────────────
+// 근거: 이 모델은 입력이 짧을수록 빨리 읽는다(실측 55자 5.87 syl/s vs 7자 7.04 = +20%).
+// 앞 청크를 상한까지 채우고 나머지를 뒤로 넘기면 한 문장 안에서 앞이 느리고 뒤가 빨라진다.
+describe('청크 길이 균등 분배', () => {
+  const stat = (cs: string[]) => ({
+    max: Math.max(...cs.map((c) => c.length)),
+    min: Math.min(...cs.map((c) => c.length)),
+  });
+
+  test('앞뒤 청크 길이 차가 크지 않다(최장 ≤ 최단 × 2.2)', () => {
+    const s =
+      '그는 오래도록 아무 말도 하지 않은 채 창밖만 바라보고 있었는데, 그것이 무슨 뜻인지 아무도 알지 못했고, 결국 아무도 묻지 않았다, 그날은.';
+    const cs = chunkForSynthesis(s);
+    expect(cs.length).toBeGreaterThan(1);
+    expect(cs.join('')).toBe(s);
+    const { max, min } = stat(cs);
+    expect(max).toBeLessThanOrEqual(min * 2.2);
+  });
+
+  test('청크 수 상한(6)을 넘지 않는다 — 네이티브 왕복 = 타임아웃 예산', () => {
+    const s = '가나다라마바사, '.repeat(40);
+    const cs = chunkForSynthesis(s);
+    expect(cs.length).toBeLessThanOrEqual(6);
+    expect(cs.join('')).toBe(s);
+  });
+
+  test('아주 짧은 조각만 잔뜩인 문장도 최소 길이를 지킨다', () => {
+    const s = '가, 나, 다, 라, 마, 바, 사, 아, 자, 차, 카, 타, 파, 하, 그리고 끝이었다.';
+    const cs = chunkForSynthesis(s);
+    expect(cs.join('')).toBe(s);
+    for (const c of cs) expect(c.trim().length).toBeGreaterThanOrEqual(10);
+  });
+});

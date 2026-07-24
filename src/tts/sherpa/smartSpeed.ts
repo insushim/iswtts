@@ -209,6 +209,59 @@ export function trimEdgeSilence(
   return out;
 }
 
+// ── 꼬리 웅얼거림 게이트(v1.27.3) ─────────────────────────────────
+// 이 팩의 대사 화자(sid 1·6)는 말이 끝난 뒤 40~100ms 동안 저레벨 유성 잔향(피크의 13~19%)을
+// 남긴다 — 실측 2026-07-24(ell6/tailgate_probe, 지문 화자 sid 0 은 0~40ms). 사용자가 반복
+// 보고한 "문장 끝의 '드' 같은 불필요한 발음"의 남은 후보다(v1.27.1에서 고친 따옴표·잔존
+// 마침표 잔향과는 다른, 화자 고유의 날숨).
+// 규칙: **마지막 강프레임(피크의 30% 초과) 뒤**만 본다 — 발화 본체는 어떤 경우에도 건드리지
+// 않는다. 그 뒤 구간의 최대 레벨이 피크의 25%를 넘으면(= 진짜 여린 말끝) 그대로 두고,
+// 아니면 40ms 페이드로 눕힌다. Whisper 전사는 게이트 전후가 동일했다(말끝 삭제 아님).
+const TAIL_FRAME_MS = 20;
+const TAIL_STRONG_REL = 0.3;
+const TAIL_GATE_REL = 0.25;
+const TAIL_FADE_MS = 40;
+// 이보다 짧은 꼬리는 건드리지 않는다 — 종성 파열음(ㅂ·ㄷ·ㄱ)의 개방 버스트가 딱 이 길이대라
+// 무차별 페이드는 말끝 자음을 깎는다(교차검증 codex 경고). 화자 날숨은 60ms 이상 이어진다.
+const TAIL_MIN_MURMUR_MS = 60;
+
+export function gateTailMurmur(samples: number[], sampleRate: number): number[] {
+  const win = Math.max(1, Math.round((sampleRate * TAIL_FRAME_MS) / 1000));
+  const frames = Math.floor(samples.length / win);
+  if (frames < 3) return samples;
+  const rms = new Array<number>(frames);
+  let peak = 0;
+  for (let f = 0; f < frames; f++) {
+    let sum = 0;
+    const base = f * win;
+    for (let i = 0; i < win; i++) sum += samples[base + i] * samples[base + i];
+    rms[f] = Math.sqrt(sum / win);
+    if (rms[f] > peak) peak = rms[f];
+  }
+  if (peak <= 0) return samples;
+  let lastStrong = -1;
+  for (let f = frames - 1; f >= 0; f--) {
+    if (rms[f] > peak * TAIL_STRONG_REL) {
+      lastStrong = f;
+      break;
+    }
+  }
+  if (lastStrong < 0 || lastStrong >= frames - 1) return samples;
+  let murmurFrames = 0;
+  for (let f = lastStrong + 1; f < frames; f++) {
+    if (rms[f] > peak * TAIL_GATE_REL) return samples; // 진짜 말끝이 이어진다
+    // 무음이 아니라 "들리는" 잔향만 센다(무음 꼬리는 원래 있는 것).
+    if (rms[f] > peak * 0.02) murmurFrames = f - lastStrong;
+  }
+  if (murmurFrames * TAIL_FRAME_MS < TAIL_MIN_MURMUR_MS) return samples;
+  const cut = (lastStrong + 1) * win;
+  const fade = Math.min(samples.length - cut, Math.round((sampleRate * TAIL_FADE_MS) / 1000));
+  const out = samples;
+  for (let i = 0; i < fade; i++) out[cut + i] *= 1 - i / fade;
+  for (let i = cut + fade; i < out.length; i++) out[i] = 0;
+  return out;
+}
+
 export function compressSilence(samples: ArrayLike<number>, sampleRate: number): CompressedAudio {
   const n = samples.length;
   const cuts = findSilenceCuts(samples, sampleRate);

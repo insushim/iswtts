@@ -101,3 +101,46 @@ describe('짧은 문장 머리 여유(v1.27.0)', () => {
     expect(SHORT_LEAD_PAD_MS).toBeGreaterThan(120);
   });
 });
+
+// ── 꼬리 웅얼거림 게이트(v1.27.3) ─────────────────────────────────
+// 실측 근거: 대사 화자(sid 1·6)가 말끝 뒤 40~100ms 동안 피크의 13~19% 레벨로 남기는 날숨.
+describe('gateTailMurmur', () => {
+  const { gateTailMurmur } = require('../tts/sherpa/smartSpeed');
+  const SR = 1000; // 1ms = 1샘플 (프레임 20ms = 20샘플)
+  const tone = (n: number, amp: number) =>
+    Array.from({ length: n }, (_, i) => amp * Math.sin((i / 8) * Math.PI * 2));
+  const rms = (a: number[], s: number, e: number) => {
+    let sum = 0;
+    for (let i = s; i < e; i++) sum += a[i] * a[i];
+    return Math.sqrt(sum / Math.max(1, e - s));
+  };
+
+  test('짧은 꼬리(60ms 미만)는 종성 파열음일 수 있어 건드리지 않는다', () => {
+    const input = [...tone(400, 1), ...tone(40, 0.15), ...new Array(200).fill(0)];
+    expect(gateTailMurmur([...input], SR)).toEqual(input);
+  });
+
+  test('말끝 뒤 저레벨 잔향(15%)은 눕힌다 — 발화 본체는 그대로', () => {
+    const speech = tone(400, 1);
+    const murmur = tone(100, 0.15);
+    const silence = new Array(200).fill(0);
+    const out = gateTailMurmur([...speech, ...murmur, ...silence], SR);
+    expect(rms(out, 0, 400)).toBeCloseTo(rms(speech, 0, 400), 6); // 본체 무손상
+    expect(rms(out, 460, 500)).toBeLessThan(0.02); // 페이드(40ms) 뒤는 사실상 무음
+  });
+
+  test('여린 말끝(피크의 40%)은 건드리지 않는다', () => {
+    const input = [...tone(400, 1), ...tone(120, 0.4), ...new Array(100).fill(0)];
+    expect(gateTailMurmur([...input], SR)).toEqual(input);
+  });
+
+  test('무음·초단신호는 그대로 반환', () => {
+    expect(gateTailMurmur(new Array(500).fill(0), SR)).toEqual(new Array(500).fill(0));
+    expect(gateTailMurmur([0.1, 0.2], SR)).toEqual([0.1, 0.2]);
+  });
+
+  test('잔향 없이 끝나는 발화는 변화 없음', () => {
+    const input = [...tone(400, 1)];
+    expect(gateTailMurmur([...input], SR)).toEqual(input);
+  });
+});

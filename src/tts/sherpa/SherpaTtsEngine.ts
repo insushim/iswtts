@@ -16,6 +16,7 @@ import { disposePlayer } from '../disposePlayer';
 import {
   compressSilence,
   trimEdgeSilence,
+  gateTailMurmur,
   quietRuns,
   LEAD_PAD_MS,
   leadPadMsFor,
@@ -101,10 +102,15 @@ const MIN_REAL_SPEECH_MS = 250;
 // 발화 250×배속 ms 미만의 "짧은 편 문장 전부"를 늦춰, 짧은 첫 세그먼트(분할 대사)로
 // 시작하는 문장이 "처음엔 1×였다 빨라지는" 램프로 체감됐다(사용자 보고 2026-07-23).
 // 진짜 초단문(감탄사·단답)만 대상으로 좁힌다.
-const SHORT_CAP_MAX_SPEECH_MS = 400;
-// 캡 하한 = 설정 배속의 60%. 1×까지 뚝 떨어뜨리면 주변 문장(2.5×)과의 대비가 램프로
-// 들린다 — "예!"(발화 300ms)는 2.5×에서 1.5× 안팎 = 실 200ms(가청 충분·대비 완화).
-const SHORT_CAP_FLOOR_RATIO = 0.6;
+// v1.27.3: 400→320. 대사가 잦은 소설에서 400ms 대 발화(3~4음절 단문)까지 캡에 걸려
+// "가끔 문장이 느리다"가 남았다(사용자 보고 2026-07-24). 머리 패드가 배속 비례(v1.27.1)라
+// 가청 확보는 이미 패드가 담당한다 — 캡은 진짜 감탄사·단답의 최후 방어선으로만 남긴다.
+const SHORT_CAP_MAX_SPEECH_MS = 320;
+// 캡 하한 = 설정 배속의 75%(v1.27.3: 60%→75%). 1×까지 뚝 떨어뜨리면 주변 문장(2.5×)과의
+// 대비가 램프로 들린다 — "예!"(발화 300ms)는 2.5×에서 1.9× 안팎 = 실 160ms(가청 충분).
+const SHORT_CAP_FLOOR_RATIO = 0.75;
+// 즉석 생성 플레이어의 재생 지연(ms) — 배속이 네이티브에 반영될 틈(playFile 주석).
+const PLAY_DEFER_MS = 24;
 // 낱자 없는 발화의 무음 길이(파일에 굽는 값 — 재생 스트레치로 배속 비례 축소).
 const SILENT_UTTERANCE_MS = 600;
 // 낱자(문자·숫자) 판정 — 무음 발화 분기(doSynthesize)용.
@@ -761,6 +767,9 @@ export class SherpaTtsEngine implements TtsEngine {
       // ⚠️ 패드는 반드시 leadPadOf(키 계산과 동일 함수) — 갈리면 캐시 키=오디오 정합이 깨진다.
       const leadPad = this.leadPadOf(text, params);
       samples = trimEdgeSilence(rawSamples, sampleRate, leadPad, undefined, EDGE_FADE_MS);
+      // 말이 끝난 뒤 남는 화자 고유의 저레벨 날숨을 눕힌다(smartSpeed.gateTailMurmur 근거).
+      // 트림 "뒤"에 도는 이유: 꼬리 무음이 정리된 상태여야 마지막 강프레임 판정이 정확하다.
+      samples = gateTailMurmur(samples, sampleRate);
       // 발화 구간 = 전체 − 앞/뒤 무음 런 "실측"(quietRuns). "파일 − 패드 상수" 산식은 큰
       // 패드 요구치(2.5×+ 짧은 문장)에서 트림이 스킵되면 모델의 원 무음(~0.9s)이 발화로
       // 계산돼 초단문 캡이 무력화된다(교차검증 Claude 지적 — 하필 이 기능의 표적 구간).
@@ -995,7 +1004,25 @@ export class SherpaTtsEngine implements TtsEngine {
 
       if (subtitlesVisible()) startPoll();
 
-      player.play();
+      if (preloaded) {
+        player.play();
+      } else {
+        // 즉석 생성 경로(캐시 미스)에서는 재생을 한 틱 미룬다. expo-audio 의 createAudioPlayer
+        // 는 생성 즉시 prepare() 를 시작하고 setPlaybackRate 는 네이티브 메인 큐에 올라가므로
+        // (AudioModule.kt Function("setPlaybackRate") → mainQueue.launch), 준비가 빠른 짧은
+        // 파일에서는 배속이 반영되기 전에 첫 PCM 이 흘러 문장 앞부분만 1×로 들릴 수 있다
+        // (교차검증 codex: Media3 DefaultAudioSink 는 이미 drain 된 버퍼 뒤에 새 파라미터를
+        // 적용한다). 프리로드 경로는 수 초 전에 배속이 적용돼 있어 해당 없음.
+        // 24ms 지연은 이미 합성을 기다린 이 경로에서 체감 0 — 확증이 아니라 완충이다.
+        const g = myGen;
+        setTimeout(() => {
+          if (g !== this.playGen || this.player !== player) return;
+          try {
+            player.setPlaybackRate(this.effectivePlaybackRate(synth, params));
+            player.play();
+          } catch { /* teardown 과 경합하면 조용히 포기 */ }
+        }, PLAY_DEFER_MS);
+      }
     } catch (e) {
       this.teardownPlayback();
       handlers.onError?.(e instanceof Error ? e : new Error(String(e)));

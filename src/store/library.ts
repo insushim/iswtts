@@ -7,12 +7,19 @@ import {
   writeAsStringAsync,
   readAsStringAsync,
   deleteAsync,
+  moveAsync,
   getInfoAsync,
 } from 'expo-file-system/legacy';
 import type { Doc, DocFormat } from '../types';
 import { segmentDocument } from '../lib/segment';
+import { buildRepairIndex, repairFakeSpaces } from '../lib/dewrap';
 
 const DOCS_DIR = `${documentDirectory}docs/`;
+
+// 저장 문서 스키마 버전. 2 = 고정폭 하드랩의 "가짜 공백"이 정리된 문장(v1.27.3).
+// 그 이전(버전 없음)에 추가된 책은 loadDoc 이 1회 복원하고 이 표식을 남긴다 — 복원은
+// **문장 수·순서를 바꾸지 않으므로**(공백만 제거) 읽던 위치(lastIndex)가 그대로 보존된다.
+const DOC_SCHEMA = 2;
 
 async function ensureDir() {
   const info = await getInfoAsync(DOCS_DIR);
@@ -49,7 +56,7 @@ export const useLibrary = create<LibraryState>()(
         const id = newId();
         await writeAsStringAsync(
           `${DOCS_DIR}${id}.json`,
-          JSON.stringify({ id, sentences, paraStarts }),
+          JSON.stringify({ id, sentences, paraStarts, v: DOC_SCHEMA }),
         );
         const doc: Doc = {
           id,
@@ -66,8 +73,41 @@ export const useLibrary = create<LibraryState>()(
 
       loadDoc: async (id) => {
         const raw = await readAsStringAsync(`${DOCS_DIR}${id}.json`);
-        const parsed = JSON.parse(raw) as { sentences: string[]; paraStarts?: number[] };
-        return { sentences: parsed.sentences || [], paraStarts: parsed.paraStarts || [] };
+        const parsed = JSON.parse(raw) as {
+          sentences: string[];
+          paraStarts?: number[];
+          v?: number;
+        };
+        const sentences = parsed.sentences || [];
+        const paraStarts = parsed.paraStarts || [];
+        if (parsed.v === DOC_SCHEMA || sentences.length === 0) {
+          return { sentences, paraStarts };
+        }
+        // 구버전 문서 1회 복원(DOC_SCHEMA 주석): 문서 전체 빈도로 "단어 중간 가짜 공백"만
+        // 지운다. 실측(초한지 코퍼스): 가짜 공백의 72%를 정밀도 96.7%로 제거, 애초에 가짜
+        // 공백이 없는 정상 문서에서는 전체 공백의 0.09%만 건드린다(대부분 "한 번"→"한번"
+        // 류의 무해한 붙여쓰기). 실패해도 원본을 그대로 쓴다 — 낭독을 막지 않는 것이 우선.
+        const idx = buildRepairIndex(sentences);
+        const repaired = sentences.map((s) => repairFakeSpaces(s, idx));
+        // 저장은 best-effort — 실패해도 이번 세션은 복원본으로 읽고 다음 열기에서 다시 시도한다.
+        // 큰 문서(수 MB)를 제자리에 덮어쓰다 앱이 죽으면 책이 통째로 깨지므로 임시 파일에 쓰고
+        // 교체한다. 교체 단계가 실패하면 원본이 이미 지워졌을 수 있으니 직접 쓰기로 복구한다.
+        const body = JSON.stringify({ id, sentences: repaired, paraStarts, v: DOC_SCHEMA });
+        const main = `${DOCS_DIR}${id}.json`;
+        const tmp = `${main}.tmp`;
+        try {
+          await writeAsStringAsync(tmp, body);
+          await deleteAsync(main, { idempotent: true });
+          await moveAsync({ from: tmp, to: main });
+        } catch {
+          try {
+            await writeAsStringAsync(main, body);
+            await deleteAsync(tmp, { idempotent: true });
+          } catch {
+            /* 다음 열기에서 다시 시도 */
+          }
+        }
+        return { sentences: repaired, paraStarts };
       },
 
       setProgress: (id, lastIndex, total) => {

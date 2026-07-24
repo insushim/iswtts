@@ -120,6 +120,16 @@ export function sherpaPaceComp(
   return Math.max(SPEED_COMP_FLOOR, Math.min(1, t * r));
 }
 
+// ⚠️ v1.27.3에서 "고배속에서는 tempoComp 도 1 로 수렴시키자"는 안을 검토했다가 **기각**했다
+// (교차검증 codex, 실측 재확인). 근거 둘:
+//  ① tempoComp 는 편차를 "만드는" 게 아니라 "줄이는" 보정이다 — 이 모델은 짧은 입력을
+//     7.0 syl/s, 긴 입력을 5.9 syl/s 로 읽는다(실측 2026-07-24 chunktempo_probe, +20%).
+//     0.88 을 걷어내면 짧은 문장이 오히려 20% 빨라져 문장 간 템포 차가 커진다.
+//  ② 짧은 문장을 12% 빨리 소비하면 그만큼 합성 파이프라인 여유(avgRtf×rate<1)가 깎인다 —
+//     사용자 기기는 2.5×에서 이미 경계다.
+// 문장 "안"에서 앞이 느리고 뒤가 빨라지던 진짜 원인은 청크 길이 편차였고, 그건 chunkKo 의
+// 균등 분배로 잡았다(재생 속도를 건드리지 않으므로 ②와 충돌하지 않는다).
+
 // 재생속도가 분담할 배수(전체 ÷ 모델 몫 ÷ 무음압축 몫). trimFactor = 압축으로 이미 번
 // 배속(원본길이÷압축길이, 미압축=1). 곱 불변식: 모델 × trimFactor × 재생속도 = 설정 배속.
 export function sherpaPlaybackRate(rate?: number, trimFactor: number = 1): number {

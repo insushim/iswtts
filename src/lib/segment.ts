@@ -1,6 +1,8 @@
 // 한국어 친화 문장 분할. TTS 재생/자막 표시의 기본 단위(문장)를 만든다.
 // expo-speech의 입력 상한(대략 수천 자)과 자막 가독성을 위해 긴 문장은 더 쪼갠다.
 
+import { buildWrapVocab, joinWrappedLines, looksCharWrapped } from './dewrap';
+
 const MAX_LEN = 280; // 한 자막(문장) 최대 길이. 너무 길면 화면/발화 단위로 부적절.
 
 function hardWrap(s: string): string[] {
@@ -132,19 +134,40 @@ export function segmentDocument(raw: string): SegmentedDoc {
   const sentences: string[] = [];
   const paraStarts: number[] = [];
 
+  // 문단 안 줄들을 "어떻게" 이을지 먼저 결정한다(v1.27.3, dewrap.ts). 옛 소설 txt 는 문자수
+  // 기준으로 접혀 있어 단어 중간에서 줄이 끊긴다 — 무조건 공백으로 이으면 "자 신도"·"앉 아"
+  // 처럼 원문에 없던 공백이 생기고, 그게 화면에도 보이고 합성 발음도 망가뜨린다(근거·실측은
+  // dewrap.ts 헤더). 문서 전체의 줄 길이 분포로 "문자수 랩"을 감지했을 때만 어휘 기반 붙이기를
+  // 켠다 — 어절 단위로 접힌 정상 파일은 감지에서 걸러져 종전(전부 공백)과 완전히 동일하다.
+  const blockLines: string[][] = [];
+  const blockTrail: boolean[][] = [];
   for (const block of blocks) {
+    const lines: string[] = [];
+    const trail: boolean[] = [];
+    for (const l of block.split('\n')) {
+      const t = l.trim();
+      if (!t) continue;
+      lines.push(t);
+      trail.push(/\s$/.test(l)); // 파일이 랩 지점의 공백을 남겼다면 = 확실한 어절 경계
+    }
+    blockLines.push(lines);
+    blockTrail.push(trail);
+  }
+  const allLines = blockLines.flat();
+  const vocab = looksCharWrapped(blockLines.flatMap((ls) => ls.slice(0, -1)))
+    ? buildWrapVocab(allLines)
+    : null;
+
+  for (let bi = 0; bi < blocks.length; bi++) {
     // 문단 안의 줄들은 하나의 흐름으로 이어붙인 뒤 문장을 나눈다(v1.25.2). 고정폭 하드랩
     // txt(옛 소설 파일)는 문장이 — 심지어 단어가("것입니\n다.") — 줄 중간에서 잘려 있어,
     // 줄 단위 분할이면 그 조각이 그대로 "문장"이 됐다(사용자 보고: 의미 단위로 나눠야).
-    // 이음은 공백 1칸: 단어 경계 랩은 정확히 복원되고, 단어 중간 랩은 낱말 사이 공백
-    // 1칸이 남지만("것입니 다") 합성 청감에는 사실상 무해 — 문장 단위가 깨지는 것과는
-    // 비교가 안 된다. 시·목록처럼 구두점 없는 줄들은 한 문장으로 합쳐지되 hardWrap(280자)
+    // 이음매마다 공백 여부를 판정한다(v1.27.3 joinWrappedLines — 그전엔 무조건 공백 1칸이라
+    // 단어 중간 랩이 "것입니 다"·"앉 아"로 남았다. "무해"하다고 적어 뒀던 그 가정이 실제로는
+    // 발음을 깨뜨렸다는 것이 2026-07-24 실측·사용자 보고로 확인됨).
+    // 시·목록처럼 구두점 없는 줄들은 한 문장으로 합쳐지되 hardWrap(280자)
     // 이 상한을 지킨다. 문단 경계(빈 줄)는 종전대로 보존 — paraStarts 의미 불변.
-    const flow = block
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .join(' ');
+    const flow = joinWrappedLines(blockLines[bi], blockTrail[bi], vocab);
     if (!flow) continue;
     paraStarts.push(sentences.length);
     for (const part of splitLineToSentences(flow)) {

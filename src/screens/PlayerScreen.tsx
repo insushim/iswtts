@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
+  ScrollView,
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
@@ -13,6 +14,14 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { usePalette } from '../lib/theme';
 import { splitHighlight } from '../lib/highlight';
 import { clamp01, indexToPct, pctToIndex } from '../lib/scrub';
+import {
+  autoScrollTarget,
+  hideNeighbors,
+  lineScrollTarget,
+  shouldScroll,
+  subtitleShrink,
+  type SubtitleLine,
+} from '../lib/subtitleLayout';
 import { RATE_MIN, RATE_MAX, stepRateValue } from '../lib/rateSteps';
 import { usePlayer } from '../store/player';
 import { useLibrary } from '../store/library';
@@ -146,11 +155,61 @@ export default function PlayerScreen({ route, navigation }: Props) {
   const prev = index > 0 ? sentences[index - 1] : '';
   const nextS = index < sentences.length - 1 ? sentences[index + 1] : '';
 
-  const bigSize = Math.round(26 * fontScale);
+  // 긴 문장(대사 한 덩어리 등)은 글자를 단계적으로 줄여 되도록 스크롤 없이 담는다
+  // (subtitleLayout.ts — 그래도 넘치면 아래 자동 스크롤이 하이라이트를 따라간다).
+  const bigSize = Math.round(26 * fontScale * subtitleShrink(cur.length));
+  const bigLineH = Math.round(bigSize * 1.54);
+  // 긴 문장일 때는 이웃 자막(이전·다음)을 감춰 현재 문장에 자리를 몰아준다.
+  const roomy = hideNeighbors(cur.length);
   const smallSize = Math.round(16 * fontScale);
 
   // 현재 문장을 [앞 · 하이라이트 단어 · 뒤]로 분해
   const { before, word, after } = splitHighlight(cur, wordStart, wordLen);
+
+  // ── 자막 자동 스크롤: 한 화면을 넘는 문장에서 하이라이트를 따라간다 ─────────
+  const stageRef = useRef<ScrollView>(null);
+  const [viewH, setViewH] = useState(0);
+  const [contentH, setContentH] = useState(0);
+  const scrollY = useRef(0);
+  // 줄 정보는 ref 에 담는다 — state 로 두면 onTextLayout → 리렌더 → 재측정 루프가 된다.
+  const linesRef = useRef<SubtitleLine[]>([]);
+
+  // 손으로 스크롤한 동안에는 자동 추적을 멈춘다(읽던 위치를 뺏지 않게) — 문장이 바뀌면 해제.
+  const userScrolled = useRef(false);
+
+  // 문장이 바뀌면 처음부터.
+  useEffect(() => {
+    scrollY.current = 0;
+    userScrolled.current = false;
+    // 이전 문장의 줄 정보를 비운다 — 새 문장의 onTextLayout 이 도착하기 전까지 그걸 쓰면
+    // 엉뚱한 줄로 스크롤한다(길이 검사가 대부분 걸러 주지만 우연히 비슷하면 통과한다).
+    linesRef.current = [];
+    stageRef.current?.scrollTo({ y: 0, animated: false });
+  }, [index]);
+
+  useEffect(() => {
+    if (userScrolled.current) return;
+    // 줄 정보(onTextLayout)가 있으면 "몇 번째 줄"로, 없으면 글자 수 비례로.
+    const target =
+      lineScrollTarget({
+        lines: linesRef.current,
+        charIndex: wordStart,
+        textLen: cur.length,
+        contentH,
+        viewH,
+      }) ??
+      autoScrollTarget({
+        charIndex: wordStart,
+        charLen: wordLen,
+        textLen: cur.length,
+        contentH,
+        viewH,
+      });
+    // 단어마다 몇 px 씩 흔들리지 않게 문턱을 넘을 때만(shouldScroll).
+    if (!shouldScroll(scrollY.current, target, viewH)) return;
+    scrollY.current = target;
+    stageRef.current?.scrollTo({ y: target, animated: true });
+  }, [wordStart, wordLen, cur.length, contentH, viewH]);
 
   // 배속 눈금은 lib/rateSteps.ts 단일 진실원(1~2×는 0.1 간격 — v1.25.1).
 
@@ -205,7 +264,7 @@ export default function PlayerScreen({ route, navigation }: Props) {
 
       {/* 자막 영역: 이전(흐림) · 현재(중앙 크게) · 다음(흐림) */}
       <View style={styles.stage}>
-        {!!prev && (
+        {!!prev && !roomy && (
           <Text
             style={[styles.neighbor, { color: p.faint, fontSize: smallSize }]}
             numberOfLines={2}
@@ -214,26 +273,45 @@ export default function PlayerScreen({ route, navigation }: Props) {
           </Text>
         )}
 
-        <Text style={[styles.current, { fontSize: bigSize, color: p.text }]}>
-          {before}
-          {!!word && (
-            <Text
-              style={{
-                color: p.highlightText,
-                backgroundColor: p.highlight,
-                // ⚠️ fontWeight 를 문장('700')과 다르게 주지 말 것 — 굵기가 다르면 글자 폭이
-                // 변해 하이라이트가 단어를 옮겨 다닐 때마다 줄바꿈이 재계산되고, 문장 전체가
-                // 이리저리 밀리는 "배치 흔들림"이 된다(사용자 보고 2026-07-23). 강조는
-                // 배경색+글자색 대비만으로 — 글리프 폭이 완전히 동일해 레이아웃이 고정된다.
-              }}
-            >
-              {word}
-            </Text>
-          )}
-          {after}
-        </Text>
+        {/* 현재 문장: 남는 공간 안에서만 자란다(flexShrink) — 넘치면 스크롤. 이전엔 이 Text 가
+            제 높이대로 늘어나 상단바·진행바 위로 흘러넘쳐 잘렸다(사용자 보고 2026-07-24). */}
+        <ScrollView
+          ref={stageRef}
+          style={styles.currentScroll}
+          contentContainerStyle={styles.currentScrollContent}
+          showsVerticalScrollIndicator={false}
+          onLayout={(e) => setViewH(e.nativeEvent.layout.height)}
+          onContentSizeChange={(_w, h) => setContentH(h)}
+          onScrollBeginDrag={() => {
+            userScrolled.current = true;
+          }}
+        >
+          <Text
+            style={[styles.current, { fontSize: bigSize, lineHeight: bigLineH, color: p.text }]}
+            onTextLayout={(e) => {
+              linesRef.current = e.nativeEvent.lines as SubtitleLine[];
+            }}
+          >
+            {before}
+            {!!word && (
+              <Text
+                style={{
+                  color: p.highlightText,
+                  backgroundColor: p.highlight,
+                  // ⚠️ fontWeight 를 문장('700')과 다르게 주지 말 것 — 굵기가 다르면 글자 폭이
+                  // 변해 하이라이트가 단어를 옮겨 다닐 때마다 줄바꿈이 재계산되고, 문장 전체가
+                  // 이리저리 밀리는 "배치 흔들림"이 된다(사용자 보고 2026-07-23). 강조는
+                  // 배경색+글자색 대비만으로 — 글리프 폭이 완전히 동일해 레이아웃이 고정된다.
+                }}
+              >
+                {word}
+              </Text>
+            )}
+            {after}
+          </Text>
+        </ScrollView>
 
-        {!!nextS && (
+        {!!nextS && !roomy && (
           <Text
             style={[styles.neighbor, { color: p.faint, fontSize: smallSize }]}
             numberOfLines={2}
@@ -372,7 +450,12 @@ const styles = StyleSheet.create({
     gap: 22,
   },
   neighbor: { textAlign: 'center', lineHeight: 24 },
-  current: { textAlign: 'center', fontWeight: '700', lineHeight: 40 },
+  // 남는 높이 안에서만 차지한다(flexGrow 0 + flexShrink 1) — 내용이 더 크면 스크롤.
+  currentScroll: { flexGrow: 0, flexShrink: 1, alignSelf: 'stretch' },
+  // 짧은 문장은 영역 안에서 세로 중앙(flexGrow: 1 + center), 긴 문장은 위에서부터 채운다.
+  currentScrollContent: { flexGrow: 1, justifyContent: 'center' },
+  // lineHeight 는 글자 크기에 비례해 화면에서 계산(축소 시 줄 간격만 남는 것 방지).
+  current: { textAlign: 'center', fontWeight: '700' },
   notice: {
     marginHorizontal: 20,
     marginBottom: 10,
