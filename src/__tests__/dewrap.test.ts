@@ -40,8 +40,12 @@ describe('looksCharWrapped', () => {
     const varied = [30, 38, 25, 39, 33, 21, 37, 28, 31, 36].map((n) => 'ㄱ'.repeat(n));
     expect(looksCharWrapped(varied)).toBe(false);
   });
-  test('표본이 적으면(8줄 미만) 판단하지 않는다', () => {
-    expect(looksCharWrapped(uniform.slice(0, 5))).toBe(false);
+  test('표본이 적으면(12줄 미만) 판단하지 않는다 — 감지는 자동 적용의 충분조건', () => {
+    expect(looksCharWrapped(uniform.slice(0, 11))).toBe(false);
+  });
+  test('폭이 꽉 찬 줄이 종결부호로 끝나면(한 줄=한 문장 파일) 판단 보류', () => {
+    const perSentence = Array.from({ length: 14 }, () => 'ㄱ'.repeat(39) + '.');
+    expect(looksCharWrapped(perSentence)).toBe(false);
   });
   test('아주 긴 줄(200자 초과)은 랩이 아니라 원래 긴 줄', () => {
     expect(looksCharWrapped(Array.from({ length: 12 }, () => 'ㄱ'.repeat(300)))).toBe(false);
@@ -123,5 +127,39 @@ describe('repairFakeSpaces(저장본 사후 복원)', () => {
   });
   test('근거(빈도)가 없으면 붙이지 않는다 — 문장 수·순서 불변이 원칙', () => {
     expect(repairFakeSpaces('처음 보는 어절 조합이다.', idx)).toBe('처음 보는 어절 조합이다.');
+  });
+});
+
+// ── 마이그레이션 안전 불변식(v1.27.3) ──────────────────────────────
+// library.loadDoc 이 구버전 문서를 열 때 sentences.map(repairFakeSpaces) 로 1회 복원한다.
+// 읽던 위치(lastIndex)가 보존되는 근거는 오직 "문장 수·순서가 변하지 않는다"는 이 성질이다
+// (교차검증 Claude: 재분할+인덱스 리매핑은 전 사용자 위치가 조용히 틀어지는 CRITICAL 급).
+describe('복원은 문장 배열의 모양을 바꾸지 않는다', () => {
+  const doc = [
+    '자 신도 모르는 사이에 일이 벌어졌다.',
+    '그는 자신도 어쩔 수 없었다.',
+    '"무공" 을 익힌 자였다.',
+    '네.',
+    '……',
+    '자신도 모르게 웃었다.',
+  ];
+  const idx = buildRepairIndex(doc);
+  const out = doc.map((s) => repairFakeSpaces(s, idx));
+
+  test('문장 수·순서 불변(= lastIndex 보존)', () => {
+    expect(out.length).toBe(doc.length);
+    expect(out[3]).toBe('네.');
+  });
+  test('빈 문장을 만들지 않는다(빈 자막·무음 발화 방지)', () => {
+    for (const s of out) expect(s.trim().length).toBeGreaterThan(0);
+  });
+  test('공백만 사라질 뿐 글자는 그대로(낭독 유실 0)', () => {
+    for (let i = 0; i < doc.length; i++) {
+      expect(out[i].replace(/\s+/g, '')).toBe(doc[i].replace(/\s+/g, ''));
+    }
+  });
+  test('멱등 — 다시 돌려도 같은 결과', () => {
+    const twice = out.map((s) => repairFakeSpaces(s, buildRepairIndex(out)));
+    expect(twice).toEqual(out);
   });
 });
